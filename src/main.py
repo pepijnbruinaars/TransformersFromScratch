@@ -4,7 +4,7 @@ from transformer import Transformer
 def main() -> None:
     # From the paper
     d_model = 512
-    transformer = Transformer()
+    transformer = Transformer(d_model)
     print(transformer)
 
 
