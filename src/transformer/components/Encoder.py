@@ -47,9 +47,9 @@ class Encoder(nn.Module):
                 for _ in range(n_blocks)
             ]
         )
-        self.normalization_layer = LayerNormalization
+        self.normalization_layer = LayerNormalization()
 
-    def forward(self, x, mask):
+    def forward(self, x: torch.Tensor, mask: torch.Tensor):
         for layer in self.layers:
             x = layer(x, mask)
         return self.normalization_layer(x)
