@@ -79,6 +79,10 @@ class Transformer(nn.Module):
 
         # Initialize parameters using He initialization
         _initialize_weights(self)
+        print("Initialized the transformer model with the following parameters:")
+        print(
+            f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, source_length: {source_length}, target_length: {target_length}, source_vocabulary_size: {source_vocabulary_size}, target_vocabulary_size: {target_vocabulary_size}"
+        )
 
     def encode(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """Encode the input sequence."""
