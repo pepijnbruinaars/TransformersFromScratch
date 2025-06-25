@@ -1,4 +1,5 @@
 from transformer import Transformer
+from huggingface_hub import hf_hub_download
 
 
 def main() -> None:
