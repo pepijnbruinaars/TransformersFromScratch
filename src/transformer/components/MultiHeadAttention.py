@@ -6,9 +6,9 @@ import math
 
 
 def scaled_dot_product_attention(
-    Q: torch.FloatTensor,
-    K: torch.FloatTensor,
-    V: torch.FloatTensor,
+    Q: torch.Tensor,
+    K: torch.Tensor,
+    V: torch.Tensor,
     mask: Optional[torch.Tensor] = None,
     dropout: Optional[nn.Dropout] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -23,7 +23,8 @@ def scaled_dot_product_attention(
     scores = torch.matmul(Q, K.transpose(-2, -1))
     normalized_scores = scores / math.sqrt(K.shape[-1])
     if mask is not None:
-        normalized_scores.masked_fill_(mask == 0, -1e12)
+        # Ensure mask can be broadcasted to match the scores tensor shape
+        normalized_scores = normalized_scores.masked_fill(mask == 0, -1e12)
 
     # 2. Apply softmax to get probabilities
     probabilities = torch.softmax(normalized_scores, dim=-1)
@@ -86,9 +87,9 @@ class MultiHeadAttention(nn.Module):
         ).transpose(1, 2)
 
         x, attention_scores = scaled_dot_product_attention(
-            Q,
-            K,
-            V,
+            query,
+            key,
+            value,
             mask,
             self.dropout,
         )

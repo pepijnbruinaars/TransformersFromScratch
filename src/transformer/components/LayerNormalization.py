@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import math
 
 
 class LayerNormalization(nn.Module):
@@ -20,6 +19,6 @@ class LayerNormalization(nn.Module):
         mean = x.mean(dim=-1, keepdim=True)
         std = x.std(dim=-1, keepdim=True)
 
-        x_hat = x - mean / math.sqrt(std + self.epsilon)
+        x_hat = (x - mean) / torch.sqrt(std + self.epsilon)
 
         return self.alpha * x_hat + self.bias

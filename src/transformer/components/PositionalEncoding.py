@@ -31,5 +31,6 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("positional_encodings", positional_encodings)
 
     def forward(self, x: torch.FloatTensor):
-        value = x + (self.positional_encodings[:, x.shape[1], :]).requires_grad(False)  # type: ignore
+        pos_encoding = self.positional_encodings[:, : x.shape[1], :]  # type: ignore
+        value = x + pos_encoding
         return self.dropout(value)

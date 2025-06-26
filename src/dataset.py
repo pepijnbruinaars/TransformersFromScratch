@@ -12,8 +12,8 @@ class DatasetPair(TypedDict):
 
     source: torch.Tensor
     target: torch.Tensor
-    encoder_mask: torch.Tensor
-    decoder_mask: torch.Tensor
+    source_mask: torch.Tensor
+    target_mask: torch.Tensor
     label: torch.Tensor
     source_text: str
     target_text: str
@@ -142,8 +142,8 @@ class CustomDataset(TorchDataset):
         return {
             "source": source_tensor,
             "target": target_tensor,
-            "encoder_mask": masked_source_tensor,
-            "decoder_mask": masked_target_tensor,
+            "source_mask": masked_source_tensor,
+            "target_mask": masked_target_tensor,
             "label": label_tensor,
             "source_text": source_text,
             "target_text": target_text,
