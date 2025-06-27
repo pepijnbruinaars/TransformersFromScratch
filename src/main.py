@@ -160,8 +160,9 @@ def main() -> None:
         full_dataset[0], english_tokenizer, dutch_tokenizer
     )
 
-    # Use the maximum of both for consistent sequence length
-    max_sequence_length = max(source_length, target_length)
+    max_sequence_length = min(
+        max(source_length, target_length), 512
+    )  # Cap at 512 tokens
 
     # Create datasets for training and validation
     train = CustomDataset(
@@ -184,7 +185,7 @@ def main() -> None:
     ## BUILDING THE MODEL ##
     ########################
 
-    # Model parameters from the paper
+    # Model parameters
     n_blocks = 6
     d_model = 512
     d_ff = 2048

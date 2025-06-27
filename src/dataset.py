@@ -92,15 +92,17 @@ class CustomDataset(TorchDataset):
         # This is because the model predicts the next token in the sequence, so we expect the model to predict the end token as well
         label_tensor = torch.tensor(target_tokens + [self.end_token], dtype=torch.int64)
 
+        # Truncate sequences if they exceed the maximum length
+        if len(source_tensor) > self.sequence_length:
+            source_tensor = source_tensor[: self.sequence_length]
+        if len(target_tensor) > self.sequence_length:
+            target_tensor = target_tensor[: self.sequence_length]
+        if len(label_tensor) > self.sequence_length:
+            label_tensor = label_tensor[: self.sequence_length]
+
         # Pad the source and target tensors to the specified sequence length
         number_padding_source = self.sequence_length - len(source_tensor)
         number_padding_target = self.sequence_length - len(target_tensor)
-
-        if number_padding_source < 0 or number_padding_target < 0:
-            raise ValueError(
-                f"Source or target sequence length exceeds the specified sequence length: {self.sequence_length}. "
-                f"Source length: {len(source_tensor)}, Target length: {len(target_tensor)}."
-            )
 
         # Concatenate padding tokens to the source and target tensors
         source_tensor = torch.cat(
