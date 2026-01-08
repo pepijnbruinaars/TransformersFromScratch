@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Optional
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers  # type: ignore
 
-from constants import END_TOKEN, PAD_TOKEN, START_TOKEN, UNKNOWN_TOKEN
+from .constants import END_TOKEN, PAD_TOKEN, START_TOKEN, UNKNOWN_TOKEN
 
 
 class CustomTokenizer:

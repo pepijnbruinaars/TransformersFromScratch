@@ -3,8 +3,8 @@ from datasets import Dataset  # type: ignore
 from torch.utils.data import Dataset as TorchDataset
 from typing import TypedDict
 
-from constants import END_TOKEN, PAD_TOKEN, START_TOKEN
-from tokenizer import CustomTokenizer
+from ..constants import END_TOKEN, PAD_TOKEN, START_TOKEN
+from ..tokenizer import CustomTokenizer
 
 
 class DatasetPair(TypedDict):
@@ -51,19 +51,31 @@ class CustomDataset(TorchDataset):
         self.target_tokenizer = target_tokenizer
         self.sequence_length = sequence_length
 
-        self.start_token = torch.tensor(
+        # Source-side special tokens
+        self.source_start_token = torch.tensor(
             source_tokenizer.token_to_id(START_TOKEN), dtype=torch.int64
         )
-        self.end_token = torch.tensor(
+        self.source_end_token = torch.tensor(
             source_tokenizer.token_to_id(END_TOKEN), dtype=torch.int64
         )
-        self.padding_token = torch.tensor(
+        self.source_padding_token = torch.tensor(
             source_tokenizer.token_to_id(PAD_TOKEN), dtype=torch.int64
         )
 
-    def _mask(self, tensor: torch.Tensor) -> torch.Tensor:
+        # Target-side special tokens
+        self.target_start_token = torch.tensor(
+            target_tokenizer.token_to_id(START_TOKEN), dtype=torch.int64
+        )
+        self.target_end_token = torch.tensor(
+            target_tokenizer.token_to_id(END_TOKEN), dtype=torch.int64
+        )
+        self.target_padding_token = torch.tensor(
+            target_tokenizer.token_to_id(PAD_TOKEN), dtype=torch.int64
+        )
+
+    def _mask(self, tensor: torch.Tensor, padding_token: torch.Tensor) -> torch.Tensor:
         """Create a mask for the tensor, where padding tokens are masked out."""
-        return (tensor != self.padding_token).unsqueeze(0).unsqueeze(0).int()
+        return (tensor != padding_token).unsqueeze(0).unsqueeze(0).int()
 
     def __len__(self) -> int:
         """Return the length of the dataset."""
@@ -81,16 +93,19 @@ class CustomDataset(TorchDataset):
 
         # Add start and end tokens to the source tensor
         source_tensor = torch.tensor(
-            [self.start_token] + source_tokens + [self.end_token], dtype=torch.int64
+            [self.source_start_token] + source_tokens + [self.source_end_token],
+            dtype=torch.int64,
         )
         # Add start token to the target tensor (NO end token for target)
         target_tensor = torch.tensor(
-            [self.start_token] + target_tokens, dtype=torch.int64
+            [self.target_start_token] + target_tokens, dtype=torch.int64
         )
 
         # The label tensor is the target tokens with an end token appended
         # This is because the model predicts the next token in the sequence, so we expect the model to predict the end token as well
-        label_tensor = torch.tensor(target_tokens + [self.end_token], dtype=torch.int64)
+        label_tensor = torch.tensor(
+            target_tokens + [self.target_end_token], dtype=torch.int64
+        )
 
         # Truncate sequences if they exceed the maximum length
         if len(source_tensor) > self.sequence_length:
@@ -108,20 +123,20 @@ class CustomDataset(TorchDataset):
         source_tensor = torch.cat(
             [
                 source_tensor,
-                self.padding_token.repeat(number_padding_source),
+                self.source_padding_token.repeat(number_padding_source),
             ]
         )
         target_tensor = torch.cat(
             [
                 target_tensor,
-                self.padding_token.repeat(number_padding_target),
+                self.target_padding_token.repeat(number_padding_target),
             ]
         )
 
         label_tensor = torch.cat(
             [
                 label_tensor,
-                self.padding_token.repeat(number_padding_target),
+                self.target_padding_token.repeat(number_padding_target),
             ]
         )
 
@@ -136,8 +151,8 @@ class CustomDataset(TorchDataset):
         ), f"Label tensor length: {len(label_tensor)} - expected {self.sequence_length}."
 
         # Apply masks to the source and target tensors
-        masked_source_tensor = self._mask(source_tensor)
-        masked_target_tensor = self._mask(target_tensor) & attention_mask(
+        masked_source_tensor = self._mask(source_tensor, self.source_padding_token)
+        masked_target_tensor = self._mask(target_tensor, self.target_padding_token) & attention_mask(
             target_tensor.size(0)
         )
 

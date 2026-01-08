@@ -24,7 +24,7 @@ def scaled_dot_product_attention(
     normalized_scores = scores / math.sqrt(K.shape[-1])
     if mask is not None:
         # Ensure mask can be broadcasted to match the scores tensor shape
-        normalized_scores = normalized_scores.masked_fill(mask == 0, -1e12)
+        normalized_scores = normalized_scores.masked_fill(mask == 0, float("-inf"))
 
     # 2. Apply softmax to get probabilities
     probabilities = torch.softmax(normalized_scores, dim=-1)
@@ -70,21 +70,17 @@ class MultiHeadAttention(nn.Module):
         V: torch.FloatTensor,
         mask: torch.Tensor,
     ):
+        batch_size = Q.shape[0]
+        
         # Get Q', K', and V'
         query: torch.Tensor = self.W_Q(Q)
         key: torch.Tensor = self.W_K(K)
         value: torch.Tensor = self.W_V(V)
 
-        # Split into 'pre-heads'
-        query = query.view(
-            query.shape[0], query.shape[1], self.n_heads, self.d_k
-        ).transpose(1, 2)
-        key = key.view(key.shape[0], key.shape[1], self.n_heads, self.d_k).transpose(
-            1, 2
-        )
-        value = value.view(
-            value.shape[0], value.shape[1], self.n_heads, self.d_k
-        ).transpose(1, 2)
+        # Reshape to multi-head format: (batch, seq_len, d_model) -> (batch, seq_len, n_heads, d_k) -> (batch, n_heads, seq_len, d_k)
+        query = query.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        key = key.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+        value = value.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
 
         x, attention_scores = scaled_dot_product_attention(
             query,
@@ -94,7 +90,7 @@ class MultiHeadAttention(nn.Module):
             self.dropout,
         )
 
-        # (Batch, len, n_heads, d_k) -> (Batch, len, d_model)
-        x = x.transpose(1, 2).contiguous().view(x.shape[0], -1, self.n_heads * self.d_k)
+        # Reshape back: (batch, n_heads, seq_len, d_k) -> (batch, seq_len, d_model)
+        x = x.transpose(1, 2).reshape(batch_size, -1, self.d_model)
 
         return self.W_O(x)

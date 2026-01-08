@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from transformer.components import (
+from .components import (
     Encoder,
     Decoder,
     InputEmbedding,
@@ -16,10 +16,10 @@ def _initialize_weights(module: nn.Module) -> None:
     Args:
         module (nn.Module): The module to initialize.
     """
-    for p in module.parameters():
+    for name, p in module.named_parameters():
         # We only want to initialize weights
         if p.dim() > 1:
-            nn.init.xavier_uniform_(p)
+            nn.init.normal_(p)
 
 
 class Transformer(nn.Module):
@@ -77,6 +77,8 @@ class Transformer(nn.Module):
         )
         self.projection_layer = ProjectionLayer(d_model, target_vocabulary_size)
 
+        self.projection_layer.weight = self.decoder_embedding.embedding.weight
+
         # Initialize parameters using He initialization
         _initialize_weights(self)
         print("Initialized the transformer model with the following parameters:")
@@ -104,7 +106,20 @@ class Transformer(nn.Module):
 
     def project(self, x: torch.Tensor) -> torch.Tensor:
         """Project the output to the vocabulary size."""
-        return self.projection_layer(x)
+        normalized_x = self.decoder.normalization_layer(x)
+        return self.projection_layer(normalized_x)
 
-    def forward(self):
-        raise NotImplementedError()
+    def forward(
+        self,
+        source: torch.Tensor,
+        target: torch.Tensor,
+        source_mask: torch.Tensor,
+        target_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Run full forward pass: encode -> decode -> project.
+
+        Returns projection logits of shape (batch, seq_len, target_vocabulary_size).
+        """
+        encoder_output = self.encode(source, source_mask)
+        decoder_output = self.decode(target, encoder_output, source_mask, target_mask)
+        return self.project(decoder_output)

@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 
 
@@ -10,4 +9,5 @@ class ProjectionLayer(nn.Module):
         self.projection_layer = nn.Linear(d_model, vocab_size)
 
     def forward(self, x):
-        return torch.softmax(self.projection_layer(x), dim=-1)
+        # Return raw logits - CrossEntropyLoss applies softmax internally
+        return self.projection_layer(x)
