@@ -2,12 +2,11 @@ import torch
 import torch.nn as nn
 
 from .components import (
-    Encoder,
-    Decoder,
     InputEmbedding,
     PositionalEncoding,
     ProjectionLayer,
 )
+from .components.EncoderDecoder import Encoder, Decoder
 
 
 def _initialize_weights(module: nn.Module) -> None:
@@ -17,9 +16,17 @@ def _initialize_weights(module: nn.Module) -> None:
         module (nn.Module): The module to initialize.
     """
     for name, p in module.named_parameters():
-        # We only want to initialize weights
         if p.dim() > 1:
-            nn.init.normal_(p)
+            # Weights of linear layers and embeddings
+            nn.init.normal_(p, mean=0.0, std=0.02)
+        else:
+            # Biases and LayerNorm parameters
+            if "bias" in name:
+                nn.init.zeros_(p)
+            elif "weight" in name:
+                # This specifically targets LayerNorm weights (gamma)
+                # We want them to start at 1.0 (identity)
+                nn.init.ones_(p)
 
 
 class Transformer(nn.Module):
@@ -86,11 +93,11 @@ class Transformer(nn.Module):
             f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, source_length: {source_length}, target_length: {target_length}, source_vocabulary_size: {source_vocabulary_size}, target_vocabulary_size: {target_vocabulary_size}"
         )
 
-    def encode(self, x: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, mask: torch.Tensor, return_attentions: bool = False):
         """Encode the input sequence."""
         x = self.encoder_embedding(x)
         x = self.encoder_positional_encoding(x)
-        return self.encoder(x, mask)
+        return self.encoder(x, mask, return_attentions=return_attentions)
 
     def decode(
         self,
@@ -98,11 +105,12 @@ class Transformer(nn.Module):
         encoder_output: torch.Tensor,
         encoder_mask: torch.Tensor,
         decoder_mask: torch.Tensor,
+        return_attentions: bool = False,
     ) -> torch.Tensor:
         """Decode the input sequence."""
         x = self.decoder_embedding(x)
         x = self.decoder_positional_encoding(x)
-        return self.decoder(x, encoder_output, encoder_mask, decoder_mask)
+        return self.decoder(x, encoder_output, encoder_mask, decoder_mask, return_attentions=return_attentions)
 
     def project(self, x: torch.Tensor) -> torch.Tensor:
         """Project the output to the vocabulary size."""

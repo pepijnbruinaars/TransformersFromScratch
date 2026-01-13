@@ -69,6 +69,7 @@ class MultiHeadAttention(nn.Module):
         K: torch.FloatTensor,
         V: torch.FloatTensor,
         mask: torch.Tensor,
+        return_attentions: bool = False,
     ):
         batch_size = Q.shape[0]
         
@@ -93,4 +94,6 @@ class MultiHeadAttention(nn.Module):
         # Reshape back: (batch, n_heads, seq_len, d_k) -> (batch, seq_len, d_model)
         x = x.transpose(1, 2).reshape(batch_size, -1, self.d_model)
 
+        if return_attentions:
+            return self.W_O(x), attention_scores
         return self.W_O(x)

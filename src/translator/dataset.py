@@ -72,6 +72,9 @@ class CustomDataset(TorchDataset):
         self.target_padding_token = torch.tensor(
             target_tokenizer.token_to_id(PAD_TOKEN), dtype=torch.int64
         )
+        
+        # Pre-compute target causal mask (same for all sequences of this length)
+        self._target_causal_mask = attention_mask(sequence_length)
 
     def _mask(self, tensor: torch.Tensor, padding_token: torch.Tensor) -> torch.Tensor:
         """Create a mask for the tensor, where padding tokens are masked out."""
@@ -152,9 +155,7 @@ class CustomDataset(TorchDataset):
 
         # Apply masks to the source and target tensors
         masked_source_tensor = self._mask(source_tensor, self.source_padding_token)
-        masked_target_tensor = self._mask(target_tensor, self.target_padding_token) & attention_mask(
-            target_tensor.size(0)
-        )
+        masked_target_tensor = self._mask(target_tensor, self.target_padding_token) & self._target_causal_mask
 
         return {
             "source": source_tensor,

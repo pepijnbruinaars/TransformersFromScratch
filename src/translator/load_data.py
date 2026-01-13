@@ -35,26 +35,36 @@ def get_max_sequence_length(
 
 
 def get_sentences_from_data(dataset) -> tuple[object, list[str], list[str]]:
-    """Loads the OPUS Books dataset for English to Dutch translation."""
-    # Load the dataset
-    dataset = load_dataset("opus_books", "en-nl", split="train")
-
+    """Loads the Wikimedia dataset for English to Dutch translation."""
+    # Load sentences from local wikimedia files
+    english_file = "data/wikimedia.en-nl.en"
+    dutch_file = "data/wikimedia.en-nl.nl"
+    
     source_sentences: list[str] = []
     target_sentences: list[str] = []
 
-    # Iterate through the dataset and extract the English and Dutch translations
-    # Each item has a "translation" field with a dictionary containing "en" and "nl" key-translations
-    for item in dataset:
-        # Convert the item to a dictionary to avoid type errors
-        item_dict: Dict[str, Any] = dict(item)
-
-        source_sentences.append(item_dict["translation"]["en"])
-        target_sentences.append(item_dict["translation"]["nl"])
+    # Read English sentences
+    with open(english_file, 'r', encoding='utf-8') as f:
+        source_sentences = [line.strip() for line in f if line.strip()]
+    
+    # Read Dutch sentences
+    with open(dutch_file, 'r', encoding='utf-8') as f:
+        target_sentences = [line.strip() for line in f if line.strip()]
+    
+    # Create a simple dataset object from the sentences
+    dataset_list = [
+        {"translation": {"en": src, "nl": tgt}} 
+        for src, tgt in zip(source_sentences, target_sentences)
+    ]
+    dataset = Dataset.from_dict({
+        "translation": [{"en": src, "nl": tgt} for src, tgt in zip(source_sentences, target_sentences)]
+    })
+    
     return dataset, source_sentences, target_sentences
 
 
 def load_opus_data(train_split: float = 0.7, val_split: float = 0.15, test_split: float = 0.15, deterministic: bool = False):
-    """Get a train-validation-test split of the OPUS Books dataset for English to Dutch translation.
+    """Get a train-validation-test split of the Wikimedia dataset for English to Dutch translation.
 
     Args:
         train_split (float, optional): The percentage of the dataset to use for training. Defaults to 0.7.
@@ -70,7 +80,63 @@ def load_opus_data(train_split: float = 0.7, val_split: float = 0.15, test_split
     if not (0.99 <= total_split <= 1.01):  # Allow small floating point errors
         raise ValueError(f"Train, validation, and test splits must sum to 1.0, got {total_split}")
 
-    # Load the dataset
+    # Load sentences from local wikimedia files
+    english_file = "data/wikimedia.en-nl.en"
+    dutch_file = "data/wikimedia.en-nl.nl"
+    
+    source_sentences: list[str] = []
+    target_sentences: list[str] = []
+
+    # Read English sentences
+    with open(english_file, 'r', encoding='utf-8') as f:
+        source_sentences = [line.strip() for line in f if line.strip()]
+    
+    # Read Dutch sentences
+    with open(dutch_file, 'r', encoding='utf-8') as f:
+        target_sentences = [line.strip() for line in f if line.strip()]
+    
+    # Create dataset from the sentences
+    dataset_list = [
+        {"translation": {"en": src, "nl": tgt}} 
+        for src, tgt in zip(source_sentences, target_sentences)
+    ]
+    
+    dataset: Dataset = Dataset.from_list(dataset_list)  # type: ignore
+
+    seed = 42 if deterministic else None  # Use a fixed seed for reproducibility
+    dataset = dataset.shuffle(seed=seed)  # Shuffle the dataset for randomness
+
+    # Calculate the sizes for training, validation, and test sets
+    dataset_length = len(dataset)  # type: ignore
+    train_size = int(dataset_length * train_split)
+    val_size = int(dataset_length * val_split)
+    test_size = dataset_length - train_size - val_size
+
+    train_data, val_data, test_data = random_split(dataset, [train_size, val_size, test_size])  # type: ignore
+
+    return train_data, val_data, test_data
+
+
+def load_opus_books_data(train_split: float = 0.7, val_split: float = 0.15, test_split: float = 0.15, deterministic: bool = False):
+    """Get a train-validation-test split of the OPUS Books dataset for English to Dutch translation.
+    
+    This function can be used as an alternative to load_opus_data() or to merge with the Wikimedia dataset.
+
+    Args:
+        train_split (float, optional): The percentage of the dataset to use for training. Defaults to 0.7.
+        val_split (float, optional): The percentage of the dataset to use for validation. Defaults to 0.15.
+        test_split (float, optional): The percentage of the dataset to use for testing. Defaults to 0.15.
+        deterministic (bool, optional): Whether to use a fixed seed for reproducibility. Defaults to False.
+
+    Returns:
+        Tuple containing (train_data, val_data, test_data)
+    """
+    # Validate that splits sum to 1.0
+    total_split = train_split + val_split + test_split
+    if not (0.99 <= total_split <= 1.01):  # Allow small floating point errors
+        raise ValueError(f"Train, validation, and test splits must sum to 1.0, got {total_split}")
+
+    # Load the OPUS Books dataset
     dataset: Dataset = load_dataset("opus_books", "en-nl", split="train")  # type: ignore
 
     seed = 42 if deterministic else None  # Use a fixed seed for reproducibility

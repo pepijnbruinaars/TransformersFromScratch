@@ -166,3 +166,21 @@ class CustomTokenizer:
         if not self._trained:
             raise ValueError("Tokenizer is not trained yet.")
         return self.tokenizer.get_vocab_size()
+    
+    @property
+    def special_tokens(self) -> dict[str, int]:
+        """Returns a dictionary of special tokens and their IDs."""
+        if not self._trained:
+            raise ValueError("Tokenizer is not trained yet.")
+        specials = {
+            "start_token": START_TOKEN,
+            "end_token": END_TOKEN,
+            "pad_token": PAD_TOKEN,
+            "unknown_token": UNKNOWN_TOKEN,
+        }
+        return {name: self.token_to_id(token) for name, token in specials.items()}
+        
+    @property
+    def tokenizer_model(self) -> Tokenizer:
+        """Returns the underlying Tokenizer model."""
+        return self.tokenizer

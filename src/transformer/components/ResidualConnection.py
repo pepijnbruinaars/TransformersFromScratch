@@ -13,5 +13,16 @@ class ResidualConnection(nn.Module):
         self.normalization = LayerNormalization()
 
     def forward(self, x: torch.Tensor, sublayer: nn.Module):
+        # Call sublayer with normalized input. The sublayer may return either
+        # a tensor or a tuple (tensor, attentions). Support both.
+        result = sublayer(self.normalization(x))
 
-        return x + self.dropout(sublayer(self.normalization(x)))
+        if isinstance(result, tuple):
+            output, attentions = result
+        else:
+            output, attentions = result, None
+
+        res = x + self.dropout(output)
+        if attentions is not None:
+            return res, attentions
+        return res

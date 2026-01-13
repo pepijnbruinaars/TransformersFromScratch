@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 
-from .ResidualConnection import ResidualConnection
-from .FeedForward import FeedForward
-from .MultiHeadAttention import MultiHeadAttention
-from .LayerNormalization import LayerNormalization
+from ..ResidualConnection import ResidualConnection
+from ..FeedForward import FeedForward
+from ..MultiHeadAttention import MultiHeadAttention
+from ..LayerNormalization import LayerNormalization
 
 
 class EncoderBlock(nn.Module):
@@ -23,9 +23,24 @@ class EncoderBlock(nn.Module):
         self.residual_connection_1 = ResidualConnection(dropout)
         self.residual_connection_2 = ResidualConnection(dropout)
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor):
-        x = self.residual_connection_1(x, lambda x: self.attention(x, x, x, mask))
-        x = self.residual_connection_2(x, self.feed_forward)
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, return_attentions: bool = False):
+        encoder_attentions = []
+
+        out1 = self.residual_connection_1(
+            x, lambda x: self.attention(x, x, x, mask, return_attentions=return_attentions)
+        )
+        if return_attentions and isinstance(out1, tuple):
+            x, attn1 = out1
+            encoder_attentions.append(attn1)
+        else:
+            x = out1
+
+        out2 = self.residual_connection_2(x, self.feed_forward)
+        if isinstance(out2, tuple):
+            x = out2[0]
+
+        if return_attentions:
+            return x, encoder_attentions
         return x
 
 
@@ -49,7 +64,15 @@ class Encoder(nn.Module):
         )
         self.normalization_layer = LayerNormalization()
 
-    def forward(self, x: torch.Tensor, mask: torch.Tensor):
+    def forward(self, x: torch.Tensor, mask: torch.Tensor, return_attentions: bool = False):
+        all_attentions = []
         for layer in self.layers:
-            x = layer(x, mask)
-        return self.normalization_layer(x)
+            if return_attentions:
+                x, atts = layer(x, mask, return_attentions=return_attentions)
+                all_attentions.append(atts)
+            else:
+                x = layer(x, mask)
+        x = self.normalization_layer(x)
+        if return_attentions:
+            return x, all_attentions
+        return x
