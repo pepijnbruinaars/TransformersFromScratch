@@ -10,7 +10,8 @@ class FeedForward(nn.Module):
         self.linear_1 = nn.Linear(d_model, d_ff)
         self.dropout = nn.Dropout(dropout)
         self.linear_2 = nn.Linear(d_ff, d_model)
+        self.GELU = nn.GELU()
 
     def forward(self, x):
-        x = self.linear_2(self.dropout(torch.relu(self.linear_1(x))))
+        x = self.linear_2(self.dropout(self.GELU(self.linear_1(x))))
         return x

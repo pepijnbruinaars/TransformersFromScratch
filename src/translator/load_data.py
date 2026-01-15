@@ -37,8 +37,8 @@ def get_max_sequence_length(
 def get_sentences_from_data(dataset) -> tuple[object, list[str], list[str]]:
     """Loads the Wikimedia dataset for English to Dutch translation."""
     # Load sentences from local wikimedia files
-    english_file = "data/wikimedia.en-nl.en"
-    dutch_file = "data/wikimedia.en-nl.nl"
+    english_file = "data/processed/wikimedia/wikimedia.en-nl.en.cleaned"
+    dutch_file = "data/processed/wikimedia/wikimedia.en-nl.nl.cleaned"
     
     source_sentences: list[str] = []
     target_sentences: list[str] = []
@@ -81,8 +81,8 @@ def load_opus_data(train_split: float = 0.7, val_split: float = 0.15, test_split
         raise ValueError(f"Train, validation, and test splits must sum to 1.0, got {total_split}")
 
     # Load sentences from local wikimedia files
-    english_file = "data/wikimedia.en-nl.en"
-    dutch_file = "data/wikimedia.en-nl.nl"
+    english_file = "data/processed/wikimedia/wikimedia.en-nl.en.cleaned"
+    dutch_file = "data/processed/wikimedia/wikimedia.en-nl.nl.cleaned"
     
     source_sentences: list[str] = []
     target_sentences: list[str] = []

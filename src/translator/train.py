@@ -1,7 +1,7 @@
 from datetime import datetime
-import math
 from pathlib import Path
 import json
+import math
 
 from tqdm import tqdm  # type: ignore
 from ..constants import PAD_TOKEN, START_TOKEN, END_TOKEN
@@ -15,7 +15,20 @@ from torch.utils.tensorboard.writer import SummaryWriter
 import torch
 import logging
 import matplotlib.pyplot as plt
-from .train_utils import greedy_decode_single, calculate_bleu_chrf, score_sample_from_validation
+from .train_utils import (
+    greedy_decode_single,
+    calculate_bleu_chrf,
+    score_sample_from_validation,
+    get_device,
+    build_dataloaders,
+    create_optimizer,
+    create_scheduler,
+    create_loss_function,
+    log_training_iteration,
+    log_epoch_metrics,
+    save_loss_histories,
+    log_weight_histogram,
+)
 
 # Prefer TF32 on CUDA-capable GPUs to improve stability/performance on large matmuls.
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -27,15 +40,6 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-def get_device() -> str:
-    """Returns the device to be used for training."""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
 
 
 def train_or_load_tokenizer(
@@ -60,13 +64,6 @@ def train_or_load_tokenizer(
         shared_tokenizer.print_tokens(sentence)
 
     return shared_tokenizer
-
-
-def learning_rate_lambda(current_step: int, total_steps: int, warmup_steps: int) -> float:
-    if current_step < warmup_steps:
-        return float(current_step) / float(max(1, warmup_steps))
-    progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-    return 0.5 * (1.0 + math.cos(math.pi * progress))
 
 
 def greedy_decode(
@@ -131,8 +128,8 @@ def plot_per_head_cross_attention(
 
     im = None
     # Prepare token labels (trimmed)
-    src_tokens = [source_tokenizer.id_to_token(int(t)) for t in src_seq[:src_len]]
-    tgt_tokens = [target_tokenizer.id_to_token(int(t)) for t in ys.squeeze(0).tolist()]
+    src_tokens = [source_tokenizer.id_to_token(int(t)) for t in src_seq[:src_len].tolist()]
+    tgt_tokens = [target_tokenizer.id_to_token(int(t)) for t in ys.squeeze(0)[:tgt_len].tolist()]
 
     # Thinning function to avoid too many ticks
     def thin_indices(n: int, max_ticks: int = 24):
@@ -230,22 +227,23 @@ def train_model(
 
     writer = SummaryWriter(log_dir=model_folder)
 
-    optimizer = torch.optim.Adam(transformer.parameters(), lr=learning_rate, betas=(0.9, 0.98), eps=1e-9, weight_decay=1e-5)
+    optimizer = create_optimizer(transformer, learning_rate=learning_rate)
 
-    total_steps = nr_epochs * len(train_dataloader)
-    warmup_steps = int(0.05 * total_steps)
-    logger.info(f"Total training steps: {total_steps}")
-    logger.info(f"Warm-up steps: {warmup_steps}")
+    accumulation_steps = 8  # Set to > 1 to enable gradient accumulation
+    # Calculate total optimizer steps (not total batches)
+    total_batches = nr_epochs * len(train_dataloader)
+    total_steps = (total_batches + accumulation_steps - 1) // accumulation_steps  # Ceiling division
+    logger.info(f"Total training steps (optimizer updates): {total_steps}")
+    logger.info(f"Warm-up steps: {int(0.05 * total_steps)}")
+    logger.info(f"Effective batch size: {8 * accumulation_steps} (batch_size={8} × accumulation_steps={accumulation_steps})")
 
-    scheduler = torch.optim.lr_scheduler.LambdaLR(
-        optimizer,
-        lr_lambda=lambda step: learning_rate_lambda(step, total_steps, warmup_steps),
-    )
+    scheduler = create_scheduler(optimizer, total_steps, warmup_ratio=0.05)
 
-    loss_function = torch.nn.CrossEntropyLoss(
-        ignore_index=tokenizer.token_to_id(PAD_TOKEN),
+    loss_function = create_loss_function(
+        pad_token_id=tokenizer.token_to_id(PAD_TOKEN),
+        device=device,
         label_smoothing=0.1,
-    ).to(device)
+    )
 
     # Create GradScaler once outside the training loop
     loss_scaler = torch.GradScaler("cuda") if device == "cuda" else None
@@ -256,19 +254,21 @@ def train_model(
     validation_loss_history = []
     best_val_loss = float('inf')
 
+    optimizer.zero_grad()
+
     for epoch in range(nr_epochs):
         logger.info(f"Starting Epoch {epoch + 1}/{nr_epochs}")
         transformer.train()
         batch_iterator = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}/{nr_epochs}")
         epoch_losses = []
-        for batch in batch_iterator:
-            source, target, source_mask, target_mask, label = (
-                batch["source"].to(device),
-                batch["target"].to(device),
-                batch["source_mask"].to(device),
-                batch["target_mask"].to(device),
-                batch["label"].to(device),
-            )
+        
+        for i, batch in enumerate(batch_iterator):
+            source = batch["source"].to(device)
+            target = batch["target"].to(device)
+            source_mask = batch["source_mask"].to(device)
+            target_mask = batch["target_mask"].to(device)
+            label = batch["label"].to(device)
+            
             if loss_scaler is not None:
                 with torch.autocast(device_type=device, dtype=torch.float16):
                     projection = transformer(
@@ -277,16 +277,25 @@ def train_model(
                     loss = loss_function(
                         projection.view(-1, tokenizer.vocabulary_size), label.view(-1)
                     )
+                    # Scale loss by accumulation steps
+                    loss = loss / accumulation_steps
 
                 loss_scaler.scale(loss).backward()
-                loss_scaler.unscale_(optimizer)
 
-                loss_value = loss.item()
-                # Clip and capture gradient norm before optimizer step / zero_grad
-                grad_norm_value = torch.nn.utils.clip_grad_norm_(transformer.parameters(), max_norm=1.0)
-
-                loss_scaler.step(optimizer)
-                loss_scaler.update()
+                # Only step the optimizer every N steps
+                if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
+                    loss_scaler.unscale_(optimizer)
+                    grad_norm_value = torch.nn.utils.clip_grad_norm_(transformer.parameters(), max_norm=1.0)
+                    
+                    loss_scaler.step(optimizer)
+                    loss_scaler.update()
+                    optimizer.zero_grad()
+                    scheduler.step()
+                    
+                    # Log gradient norm immediately when calculated
+                    writer.add_scalar("train/grad_norm", float(grad_norm_value), iterations)
+                else:
+                    grad_norm_value = 0.0
             else:
                 projection = transformer(
                     source, target, source_mask, target_mask
@@ -294,33 +303,35 @@ def train_model(
                 loss = loss_function(
                     projection.view(-1, tokenizer.vocabulary_size), label.view(-1)
                 )
+                # Scale loss by accumulation steps
+                loss = loss / accumulation_steps
                 loss.backward()
-                
-                loss_value = loss.item()
-                grad_norm_value = torch.nn.utils.clip_grad_norm_(transformer.parameters(), max_norm=1.0)
-                
-                optimizer.step()
-            
-            scheduler.step()
-            optimizer.zero_grad()
 
+                if (i + 1) % accumulation_steps == 0 or (i + 1) == len(train_dataloader):
+                    grad_norm_value = torch.nn.utils.clip_grad_norm_(transformer.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    optimizer.zero_grad()
+                    scheduler.step()
+                    
+                    # Log gradient norm immediately when calculated
+                    writer.add_scalar("train/grad_norm", float(grad_norm_value), iterations)
+                else:
+                    grad_norm_value = 0.0
+
+            # Logging (multiply by accumulation_steps for accurate reporting)
+            loss_value = loss.item() * accumulation_steps
             ips = float(batch_iterator.format_dict.get("rate", 0.0) or 0.0)
-            iter_time_ms = 1000.0 / ips if ips > 0 else 0.0
 
             batch_iterator.set_postfix({"loss": f"{loss_value:.6f}", "lr": f"{scheduler.get_last_lr()[0]:.6f}"})
             
             # Log to TensorBoard only every 10 iterations to avoid I/O bottleneck
-            if iterations % 10 == 0:
-                writer.add_scalar("train/loss", loss_value, iterations)
-                writer.add_scalar("speed/iters_per_sec", ips, iterations)
-                writer.add_scalar("speed/iter_time_ms", iter_time_ms, iterations)
-                writer.add_scalar("train/learning_rate", scheduler.get_last_lr()[0], iterations)
-                writer.add_scalar("train/perplexity", math.exp(loss_value), iterations)
-                writer.add_scalar("train/grad_norm", float(grad_norm_value), iterations)
-                writer.flush()
+            log_training_iteration(writer, loss_value, iterations, scheduler, ips, log_every_n=10)
+            
+            # Log weight histograms every 100 training steps
+            if iterations % 100 == 0:
+                log_weight_histogram(transformer, writer, iterations)
             
             epoch_losses.append(loss_value)
-
             iterations += 1
 
         avg_epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else 0
@@ -353,21 +364,28 @@ def train_model(
         validation_loss_history.append({"epoch": epoch + 1, "val_loss": avg_val_loss})
         
         # Calculate BLEU and chrF scores on a random sample (much faster!)
-        bleu_score, chrf_score = score_sample_from_validation(
+        bleu_score, chrf_score, generated_lengths, target_lengths = score_sample_from_validation(
             transformer, validation_dataloader, tokenizer, device, num_samples=150
         )
         
-        logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_epoch_loss:.4f} | Val Loss: {avg_val_loss:.4f} | BLEU: {bleu_score:.4f} | chrF: {chrf_score:.4f}")
-        writer.add_scalars("loss/epoch", {"train": avg_epoch_loss, "validation": avg_val_loss}, epoch)
-        writer.add_scalar("validation/bleu_score", bleu_score, epoch)
-        writer.add_scalar("validation/chrf_score", chrf_score, epoch)
-        writer.flush()
+        # Calculate length ratios
+        length_ratios = [gen / tgt if tgt > 0 else 0.0 for gen, tgt in zip(generated_lengths, target_lengths)]
+        avg_length_ratio = sum(length_ratios) / len(length_ratios) if length_ratios else 0.0
+        
+        logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_epoch_loss:.4f} | Val Loss: {avg_val_loss:.4f} | BLEU: {bleu_score:.4f} | chrF: {chrf_score:.4f} | Avg Length Ratio: {avg_length_ratio:.4f}")
+        log_epoch_metrics(writer, epoch, avg_epoch_loss, avg_val_loss, bleu_score, chrf_score)
+        
+        # Log sequence length metrics
+        writer.add_histogram("validation/generated_seq_lengths", torch.tensor(generated_lengths), epoch)
+        writer.add_histogram("validation/target_seq_lengths", torch.tensor(target_lengths), epoch)
+        writer.add_histogram("validation/length_ratios", torch.tensor(length_ratios), epoch)
+        writer.add_scalar("validation/avg_length_ratio", avg_length_ratio, epoch)
 
         # --- Log sample translations + attention maps (refactored) ---
         try:
             n_samples = 3
             with torch.no_grad():
-                for i in range(min(n_samples, len(validation_dataloader.dataset))):
+                for i in range(min(n_samples, len(validation_dataloader.dataset))):  # type: ignore
                     sample = validation_dataloader.dataset[i]
                     log_sample_and_attention(
                         writer,
@@ -387,6 +405,7 @@ def train_model(
                 "model_state_dict": transformer.state_dict(),
                 "epoch": epoch + 1,
                 "optimizer_state_dict": optimizer.state_dict(),
+                "iterations": iterations,
             },
             model_path,
         )
@@ -400,6 +419,7 @@ def train_model(
                     "epoch": epoch + 1,
                     "optimizer_state_dict": optimizer.state_dict(),
                     "val_loss": avg_val_loss,
+                    "iterations": iterations,
                 },
                 best_model_path,
             )
@@ -413,26 +433,19 @@ def train_model(
             "model_state_dict": transformer.state_dict(),
             "epoch": nr_epochs,
             "optimizer_state_dict": optimizer.state_dict(),
+            "iterations": iterations,
         },
         final_model_path,
     )
     
-    loss_history_path = f"{model_folder}/loss_history.json"
-    epoch_loss_history_path = f"{model_folder}/epoch_loss_history.json"
-    validation_loss_history_path = f"{model_folder}/validation_loss_history.json"
+    save_loss_histories(model_folder, epoch_loss_history, validation_loss_history)
     
+    # Save per-iteration loss history separately
+    loss_history_path = f"{model_folder}/loss_history.json"
     with open(loss_history_path, "w") as f:
         json.dump(loss_history, f, indent=2)
     
-    with open(epoch_loss_history_path, "w") as f:
-        json.dump(epoch_loss_history, f, indent=2)
-    
-    with open(validation_loss_history_path, "w") as f:
-        json.dump(validation_loss_history, f, indent=2)
-    
-    logger.info(f"\nLoss history saved to {loss_history_path}")
-    logger.info(f"Epoch loss history saved to {epoch_loss_history_path}")
-    logger.info(f"Validation loss history saved to {validation_loss_history_path}")
+    logger.info(f"\nLoss histories saved to {model_folder}")
 
     logger.info("Training complete!")
 
