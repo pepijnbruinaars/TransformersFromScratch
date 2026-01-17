@@ -319,6 +319,77 @@ def save_loss_histories(
         json.dump(validation_loss_history, f, indent=2)
 
 
+def greedy_decode_with_rollout(
+    transformer: torch.nn.Module,
+    encoder_output: torch.Tensor,
+    source_mask: torch.Tensor,
+    start_id: int,
+    end_id: int,
+    pad_id: int,
+    device: str,
+    max_len: int = 64,
+) -> tuple[list[int], list[torch.Tensor]]:
+    """Greedy decode while capturing all decoder cross-attention layers at final step.
+    
+    In autoregressive decoding, we generate one token at a time. To compute attention rollout,
+    we only use the final forward pass where all tokens have been decoded.
+    
+    Args:
+        transformer: The model to decode with
+        encoder_output: (1, src_len, d_model)
+        source_mask: (1, 1, src_len) or (1, src_len)
+        start_id: START token ID
+        end_id: END token ID
+        pad_id: PAD token ID
+        device: Device to use
+        max_len: Maximum sequence length
+        
+    Returns:
+        Tuple of (generated_ids, final_layer_cross_attentions)
+        where final_layer_cross_attentions is a list of attention tensors from each layer
+        at the final decoding step: each (1, n_heads, final_seq_len, src_len)
+    """
+    decoder_input = torch.tensor([[start_id]], dtype=torch.int64, device=device)
+    generated_ids: list[int] = []
+    final_attentions: list[torch.Tensor] = []
+    
+    for step in range(max_len):
+        seq_len = decoder_input.size(1)
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+            diagonal=1,
+        )
+        decoder_mask = ~causal_mask
+        decoder_mask = decoder_mask.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, seq_len)
+        
+        decoder_output, attn_dict = transformer.decode(
+            decoder_input, encoder_output, source_mask, decoder_mask, return_attentions=True
+        )
+        
+        logits = transformer.project(decoder_output)
+        next_token = logits[:, -1, :].argmax(dim=-1).item()
+        
+        # Always capture final attention at the last step (when we output a token or hit end)
+        cross_attentions = attn_dict.get("cross_attentions", [])
+        
+        if next_token == end_id:
+            # This is the final step - save these attentions for rollout
+            final_attentions = [attn for attn in cross_attentions]
+            break
+        
+        generated_ids.append(next_token)
+        decoder_input = torch.cat(
+            [decoder_input, torch.tensor([[next_token]], dtype=torch.int64, device=device)],
+            dim=1,
+        )
+        
+        # On last iteration, also save attention if we hit max_len
+        if step == max_len - 1:
+            final_attentions = [attn for attn in cross_attentions]
+    
+    return generated_ids, final_attentions
+
+
 def greedy_decode_single(
     transformer: torch.nn.Module,
     encoder_output: torch.Tensor,
@@ -410,6 +481,119 @@ def calculate_bleu_chrf(
     return bleu_score, chrf_score  # type: ignore
 
 
+def compute_attention_rollout(
+    attention_matrices: list[torch.Tensor],
+    normalize: bool = True,
+) -> torch.Tensor:
+    """Compute attention rollout by recursively multiplying attention matrices across layers.
+    
+    This method traces how information flows through the entire decoder network.
+    
+    Args:
+        attention_matrices: List of attention tensors from each layer, shape (batch, n_heads, seq_len, seq_len)
+        normalize: Whether to normalize attention matrices before multiplication
+        
+    Returns:
+        Rollout attention matrix of shape (batch, seq_len, seq_len)
+    """
+    if not attention_matrices:
+        return torch.tensor([])
+    
+    batch_size = attention_matrices[0].shape[0]
+    seq_len = attention_matrices[0].shape[2]
+    device = attention_matrices[0].device
+    
+    # Start with the last layer (L), average across heads
+    # attention_matrices[-1] shape: (batch, n_heads, seq_len, seq_len)
+    rollout = attention_matrices[-1].mean(dim=1)  # (batch, seq_len, seq_len)
+    
+    if normalize:
+        rollout = rollout / (rollout.sum(dim=-1, keepdim=True) + 1e-9)
+    
+    # Recursively multiply with previous layers (going backwards through the network)
+    for i in range(len(attention_matrices) - 2, -1, -1):
+        attn = attention_matrices[i].mean(dim=1)  # (batch, seq_len, seq_len)
+        
+        if normalize:
+            attn = attn / (attn.sum(dim=-1, keepdim=True) + 1e-9)
+        
+        # Matrix multiplication: (batch, seq_len, seq_len) @ (batch, seq_len, seq_len)
+        rollout = torch.matmul(attn, rollout)
+        
+        if normalize:
+            rollout = rollout / (rollout.sum(dim=-1, keepdim=True) + 1e-9)
+    
+    return rollout
+
+
+def attention_rollout_to_image(
+    rollout: torch.Tensor,
+    src_len: int,
+    tgt_len: int,
+) -> torch.Tensor:
+    """Convert attention rollout matrix to an image tensor for TensorBoard.
+    
+    Args:
+        rollout: Attention rollout of shape (batch, seq_len, seq_len)
+        src_len: Source sequence length (for trimming)
+        tgt_len: Target sequence length (for trimming)
+        
+    Returns:
+        Image tensor of shape (3, tgt_len, src_len) for TensorBoard visualization
+    """
+    # Take first batch item and trim to actual lengths
+    attn = rollout[0, :tgt_len, :src_len].cpu().detach()
+    
+    # Normalize to [0, 1]
+    attn_min = attn.min()
+    attn_max = attn.max()
+    if attn_max > attn_min:
+        attn = (attn - attn_min) / (attn_max - attn_min)
+    else:
+        attn = torch.ones_like(attn)
+    
+    # Convert to 3-channel image (RGB) using viridis colormap
+    import matplotlib.cm as cm
+    cmap = cm.get_cmap('viridis')
+    
+    attn_np = attn.numpy()
+    attn_colored = cmap(attn_np)  # (tgt_len, src_len, 4)
+    
+    # Convert to (3, tgt_len, src_len) format for TensorBoard
+    img = torch.from_numpy(attn_colored[:, :, :3]).permute(2, 0, 1).float()
+    
+    return img
+
+
+def count_unique_unigrams(text: str) -> int:
+    """Count unique unigrams (words) in text.
+    
+    Args:
+        text: Input text
+        
+    Returns:
+        Number of unique unigrams
+    """
+    tokens = text.split()
+    return len(set(tokens))
+
+
+def count_unique_bigrams(text: str) -> int:
+    """Count unique bigrams in text.
+    
+    Args:
+        text: Input text
+        
+    Returns:
+        Number of unique bigrams
+    """
+    tokens = text.split()
+    if len(tokens) < 2:
+        return 0
+    bigrams = [f"{tokens[i]} {tokens[i+1]}" for i in range(len(tokens) - 1)]
+    return len(set(bigrams))
+
+
 def log_weight_histogram(
     model: torch.nn.Module,
     writer: SummaryWriter,
@@ -433,11 +617,11 @@ def score_sample_from_validation(
     tokenizer,
     device: str,
     num_samples: int = 100,
-) -> tuple[float, float, list[float], list[float]]:
+) -> tuple[float, float, list[float], list[float], list[int], list[int]]:
     """Sample ~num_samples random items from validation set and compute BLEU/chrF.
     
     This is much faster than full validation pass and gives good estimates.
-    Also tracks generated and target sequence lengths for analysis.
+    Also tracks generated and target sequence lengths, plus n-gram diversity.
     
     Args:
         transformer: The model to score
@@ -447,7 +631,7 @@ def score_sample_from_validation(
         num_samples: Number of random samples to score (default 100)
         
     Returns:
-        Tuple of (bleu_score, chrf_score, generated_lengths, target_lengths)
+        Tuple of (bleu_score, chrf_score, generated_lengths, target_lengths, unigram_counts, bigram_counts)
     """
     transformer.eval()
     
@@ -477,6 +661,8 @@ def score_sample_from_validation(
     reference_texts: list[str] = []
     generated_lengths: list[float] = []
     target_lengths: list[float] = []
+    unigram_counts: list[int] = []
+    bigram_counts: list[int] = []
     
     start_id = tokenizer.token_to_id(START_TOKEN)
     end_id = tokenizer.token_to_id(END_TOKEN)
@@ -518,6 +704,10 @@ def score_sample_from_validation(
             # Track sequence lengths
             generated_lengths.append(float(len(generated_ids)))
             target_lengths.append(float(len(clean_reference_ids)))
+            
+            # Track n-gram diversity
+            unigram_counts.append(count_unique_unigrams(generated_text))
+            bigram_counts.append(count_unique_bigrams(generated_text))
     
     bleu_score, chrf_score = calculate_bleu_chrf(generated_texts, reference_texts)
-    return bleu_score, chrf_score, generated_lengths, target_lengths
+    return bleu_score, chrf_score, generated_lengths, target_lengths, unigram_counts, bigram_counts

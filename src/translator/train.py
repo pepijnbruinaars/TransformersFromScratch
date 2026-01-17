@@ -28,6 +28,9 @@ from .train_utils import (
     log_epoch_metrics,
     save_loss_histories,
     log_weight_histogram,
+    greedy_decode_with_rollout,
+    compute_attention_rollout,
+    attention_rollout_to_image,
 )
 
 # Prefer TF32 on CUDA-capable GPUs to improve stability/performance on large matmuls.
@@ -168,7 +171,7 @@ def log_sample_and_attention(
     epoch: int,
     sample_idx: int,
 ):
-    """Log one sample's SRC/TGT/PRED and per-head cross-attention to TensorBoard."""
+    """Log one sample's SRC/TGT/PRED, per-head cross-attention, and attention rollout to TensorBoard."""
     src = sample["source"].unsqueeze(0).to(device)
     src_mask = sample["source_mask"].to(device)
 
@@ -182,7 +185,8 @@ def log_sample_and_attention(
     end_id = tokenizer.token_to_id(END_TOKEN)
     pad_id = tokenizer.token_to_id(PAD_TOKEN)
 
-    generated_ids, dec_atts, ys = greedy_decode(
+    # Use rollout decoder to capture multi-layer attention
+    generated_ids, all_cross_attentions = greedy_decode_with_rollout(
         transformer, encoder_output, src_mask, start_id, end_id, pad_id, device
     )
 
@@ -192,13 +196,72 @@ def log_sample_and_attention(
 
     writer.add_text(f"samples/{sample_idx}", f"SRC: {src_text}\nTGT: {tgt_text}\nPRED: {pred_text}", global_step=epoch)
 
-    if dec_atts is not None and isinstance(dec_atts, dict):
-        cross_atts = dec_atts.get("cross_attentions")
-        if cross_atts:
-            last_layer_attn = cross_atts[-1]
-            fig = plot_per_head_cross_attention(last_layer_attn, sample["source"], ys, tokenizer, tokenizer)
-            writer.add_figure(f"attention/sample_{sample_idx}", fig, global_step=epoch)
+    # Log per-head cross-attention from last layer
+    if all_cross_attentions and all_cross_attentions[-1]:
+        try:
+            last_layer_attn = all_cross_attentions[-1][-1]  # Last time step, last layer
+            # Trim to actual lengths
+            source_pad_id = tokenizer.token_to_id(PAD_TOKEN)
+            src_len = int((src != source_pad_id).sum().item())
+            tgt_len = len(generated_ids)
+            
+            attn = last_layer_attn[0].detach().cpu()  # (n_heads, src_len, src_len) -> trim for per-head
+            attn_trimmed = attn[:, :tgt_len, :src_len]
+            num_heads = attn_trimmed.shape[0]
+
+            fig, axes = plt.subplots(nrows=num_heads, ncols=1, figsize=(8, 2 * num_heads))
+            if num_heads == 1:
+                axes = [axes]
+
+            im = None
+            src_tokens = [tokenizer.id_to_token(int(t)) for t in src[:, :src_len].tolist()[0]]
+            tgt_tokens = generated_ids[:tgt_len]
+
+            def thin_indices(n: int, max_ticks: int = 24):
+                if n <= max_ticks:
+                    return list(range(n))
+                step = max(1, n // max_ticks)
+                return list(range(0, n, step))
+
+            x_idx = thin_indices(src_len)
+            y_idx = thin_indices(tgt_len)
+
+            for h in range(num_heads):
+                ax = axes[h]
+                im = ax.imshow(attn_trimmed[h].numpy(), aspect="auto", cmap="viridis")
+                ax.set_title(f"head {h}")
+                ax.set_xlabel("source position")
+                ax.set_ylabel("target position")
+                ax.set_xticks(x_idx)
+                ax.set_xticklabels([src_tokens[i] if i < len(src_tokens) else str(i) for i in x_idx], rotation=90, fontsize=8)
+                ax.set_yticks(y_idx)
+                ax.set_yticklabels([str(i) for i in y_idx], fontsize=8)
+
+            if im is not None:
+                fig.colorbar(im, ax=axes, orientation="vertical", fraction=0.02)
+
+            writer.add_figure(f"attention/last_layer_heads_sample_{sample_idx}", fig, global_step=epoch)
             plt.close(fig)
+        except Exception as e:
+            logger.warning(f"Could not log per-head attention for sample {sample_idx}: {e}")
+
+    # Compute and log attention rollout
+    if all_cross_attentions:
+        try:
+            # all_cross_attentions is a list of attention tensors from each layer
+            # Each tensor: (1, n_heads, final_seq_len, src_len)
+            rollout = compute_attention_rollout(all_cross_attentions)
+            
+            # Convert to image
+            source_pad_id = tokenizer.token_to_id(PAD_TOKEN)
+            src_len = int((src != source_pad_id).sum().item())
+            tgt_len = len(generated_ids)
+            
+            rollout_img = attention_rollout_to_image(rollout, src_len, tgt_len)
+            
+            writer.add_image(f"attention/rollout_sample_{sample_idx}", rollout_img, global_step=epoch)
+        except Exception as e:
+            logger.warning(f"Could not compute attention rollout for sample {sample_idx}: {e}")
 
 
 def train_model(
@@ -208,7 +271,7 @@ def train_model(
     tokenizer: CustomTokenizer,
     model_config: dict,
     nr_epochs: int = 20,
-    learning_rate: float = 5e-5,
+    learning_rate: float = 5e-4,
 ) -> None:
     device = get_device()
     logger.info(f"Using device: {device}")
@@ -328,7 +391,7 @@ def train_model(
             log_training_iteration(writer, loss_value, iterations, scheduler, ips, log_every_n=10)
             
             # Log weight histograms every 100 training steps
-            if iterations % 100 == 0:
+            if iterations % 1000 == 0:
                 log_weight_histogram(transformer, writer, iterations)
             
             epoch_losses.append(loss_value)
@@ -364,7 +427,7 @@ def train_model(
         validation_loss_history.append({"epoch": epoch + 1, "val_loss": avg_val_loss})
         
         # Calculate BLEU and chrF scores on a random sample (much faster!)
-        bleu_score, chrf_score, generated_lengths, target_lengths = score_sample_from_validation(
+        bleu_score, chrf_score, generated_lengths, target_lengths, unigram_counts, bigram_counts = score_sample_from_validation(
             transformer, validation_dataloader, tokenizer, device, num_samples=150
         )
         
@@ -372,7 +435,11 @@ def train_model(
         length_ratios = [gen / tgt if tgt > 0 else 0.0 for gen, tgt in zip(generated_lengths, target_lengths)]
         avg_length_ratio = sum(length_ratios) / len(length_ratios) if length_ratios else 0.0
         
-        logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_epoch_loss:.4f} | Val Loss: {avg_val_loss:.4f} | BLEU: {bleu_score:.4f} | chrF: {chrf_score:.4f} | Avg Length Ratio: {avg_length_ratio:.4f}")
+        # Calculate n-gram diversity statistics
+        avg_unigrams = sum(unigram_counts) / len(unigram_counts) if unigram_counts else 0.0
+        avg_bigrams = sum(bigram_counts) / len(bigram_counts) if bigram_counts else 0.0
+        
+        logger.info(f"Epoch {epoch + 1} - Train Loss: {avg_epoch_loss:.4f} | Val Loss: {avg_val_loss:.4f} | BLEU: {bleu_score:.4f} | chrF: {chrf_score:.4f} | Avg Length Ratio: {avg_length_ratio:.4f} | Avg Unigrams: {avg_unigrams:.2f} | Avg Bigrams: {avg_bigrams:.2f}")
         log_epoch_metrics(writer, epoch, avg_epoch_loss, avg_val_loss, bleu_score, chrf_score)
         
         # Log sequence length metrics
@@ -380,6 +447,12 @@ def train_model(
         writer.add_histogram("validation/target_seq_lengths", torch.tensor(target_lengths), epoch)
         writer.add_histogram("validation/length_ratios", torch.tensor(length_ratios), epoch)
         writer.add_scalar("validation/avg_length_ratio", avg_length_ratio, epoch)
+        
+        # Log n-gram diversity metrics
+        writer.add_histogram("validation/unigram_counts", torch.tensor(unigram_counts), epoch)
+        writer.add_histogram("validation/bigram_counts", torch.tensor(bigram_counts), epoch)
+        writer.add_scalar("validation/avg_unigrams", avg_unigrams, epoch)
+        writer.add_scalar("validation/avg_bigrams", avg_bigrams, epoch)
 
         # --- Log sample translations + attention maps (refactored) ---
         try:
