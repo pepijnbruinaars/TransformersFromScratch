@@ -13,19 +13,9 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction  # type: ignore
 from sacrebleu.metrics import CHRF  # type: ignore
 from ..constants import START_TOKEN, END_TOKEN, PAD_TOKEN
-from ..tokenizer import CustomTokenizer
+from ..tokenization.tokenizer import CustomTokenizer
 from .dataset import CustomDataset
 from .load_data import load_opus_data
-
-
-def get_device() -> str:
-    """Returns the device to be used for training."""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)

@@ -16,8 +16,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from ..constants import PAD_TOKEN, START_TOKEN, END_TOKEN
-from ..tokenizer import CustomTokenizer
-from ..transformer import Transformer
+from ..tokenization.tokenizer import CustomTokenizer
+from ..models import Transformer
 from ..attention import (
     plot_cross_attention_for_block,
     plot_attention_overview,
@@ -26,6 +26,7 @@ from ..attention import (
     save_attention_figure,
     display_attention_figure,
 )
+from ..utils import get_device
 from .dataset import CustomDataset
 from .load_data import load_opus_data, get_sentences_from_data, get_max_sequence_length
 from .train_utils import greedy_decode_single
@@ -76,16 +77,6 @@ def load_model_from_folder(model_folder: str, device: str = "cpu") -> tuple[Tran
     model.eval()
     
     return model, config, tokenizer
-
-
-def get_device() -> str:
-    """Returns the device to be used."""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 def greedy_decode_with_attention(
     transformer: Transformer,

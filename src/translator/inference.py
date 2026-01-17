@@ -16,17 +16,9 @@ from pathlib import Path
 import torch
 
 from ..constants import END_TOKEN, PAD_TOKEN, START_TOKEN
-from ..tokenizer import CustomTokenizer
-from ..transformer import Transformer
-
-
-def get_device() -> str:
-    """Returns the device to be used for inference."""
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
+from ..tokenization.tokenizer import CustomTokenizer
+from ..models import Transformer
+from ..utils import get_device
 
 
 def load_model_config(model_folder: Path) -> dict:

@@ -1,0 +1,19 @@
+experiment_name: "default_encoder_decoder_translation"
+model:
+  architecture: "encoder_decoder"
+  n_blocks: 6
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  dropout_rate: 0.1
+training:
+  n_epochs: 20
+  scheduler:
+    type: "cosine"
+    peak_lr: 5e-4
+  warmup_step_percentage: 5
+data:
+  batch_size: 64
+checkpoint:
+  save_every_n_minutes: 10
+  save_best_only: false

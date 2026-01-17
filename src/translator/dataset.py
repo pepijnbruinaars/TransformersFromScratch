@@ -4,7 +4,7 @@ from torch.utils.data import Dataset as TorchDataset
 from typing import TypedDict
 
 from ..constants import END_TOKEN, PAD_TOKEN, START_TOKEN
-from ..tokenizer import CustomTokenizer
+from ..tokenization.tokenizer import CustomTokenizer
 
 
 class DatasetPair(TypedDict):

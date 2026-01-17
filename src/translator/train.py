@@ -1,13 +1,12 @@
 from datetime import datetime
 from pathlib import Path
 import json
-import math
 
 from tqdm import tqdm  # type: ignore
 from ..constants import PAD_TOKEN, START_TOKEN, END_TOKEN
 from .load_data import get_max_sequence_length, load_opus_data, get_sentences_from_data
 from ..tokenizer import CustomTokenizer
-from ..transformer import Transformer
+from ..models import Transformer
 from .dataset import CustomDataset
 from .dataset import attention_mask
 from torch.utils.data import DataLoader
