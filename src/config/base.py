@@ -20,6 +20,9 @@ class OptimizerConfig:
     learning_rate: float
     weight_decay: float
     betas: tuple
+    epsilon: float
+    accumulation_steps: int = 1
+    max_grad_norm: float = 1.0
 
 @dataclass
 class SchedulerConfig:
@@ -37,6 +40,9 @@ class TrainingConfig:
     num_epochs: int
     scheduler_config: SchedulerConfig
     optimizer_config: OptimizerConfig
+    label_smoothing: float = 0.1
+    tensorboard_log_dir: str = "logs/"
+    tensorboard_flush_frequency: int = 100
     logging_verbosity: int = 1
 
 @dataclass

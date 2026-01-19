@@ -2,10 +2,12 @@ from datetime import datetime
 from pathlib import Path
 import json
 
-from tqdm import tqdm  # type: ignore
+from tqdm import tqdm
+
+from utils.device import get_device  # type: ignore
 from ..constants import PAD_TOKEN, START_TOKEN, END_TOKEN
 from .load_data import get_max_sequence_length, load_opus_data, get_sentences_from_data
-from ..tokenizer import CustomTokenizer
+from ..tokenization.tokenizer import CustomTokenizer
 from ..models import Transformer
 from .dataset import CustomDataset
 from .dataset import attention_mask
@@ -18,7 +20,6 @@ from .train_utils import (
     greedy_decode_single,
     calculate_bleu_chrf,
     score_sample_from_validation,
-    get_device,
     build_dataloaders,
     create_optimizer,
     create_scheduler,

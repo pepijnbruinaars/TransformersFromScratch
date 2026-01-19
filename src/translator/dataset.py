@@ -1,5 +1,5 @@
 import torch
-from datasets import Dataset  # type: ignore
+from datasets import Dataset
 from torch.utils.data import Dataset as TorchDataset
 from typing import TypedDict
 

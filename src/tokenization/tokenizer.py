@@ -1,9 +1,11 @@
+import logging
 from pathlib import Path
 from typing import Optional
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers  # type: ignore
 
-from .constants import END_TOKEN, PAD_TOKEN, START_TOKEN, UNKNOWN_TOKEN
+from ..constants import END_TOKEN, PAD_TOKEN, START_TOKEN, UNKNOWN_TOKEN
 
+logger = logging.getLogger(__name__)
 
 class CustomTokenizer:
     def __init__(
@@ -94,7 +96,7 @@ class CustomTokenizer:
         self.path = path
         self._trained = True
 
-        print(f"Tokenizer loaded from {path}")
+        logger.info(f"Tokenizer loaded from {path}")
 
     def encode(self, text: str) -> list[int]:
         """Encodes a string into a list of token IDs.

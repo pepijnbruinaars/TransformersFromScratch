@@ -202,6 +202,7 @@ class TestYAMLSaving:
             learning_rate=1e-4,
             weight_decay=1e-5,
             betas=(0.9, 0.999),
+            epsilon=1e-8,
         )
         training_config = TrainingConfig(
             num_epochs=20,

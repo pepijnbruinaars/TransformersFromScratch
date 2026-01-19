@@ -2,7 +2,7 @@ from datasets import load_dataset, Dataset  # type: ignore
 from typing import Dict, Any, Tuple
 from torch.utils.data import random_split, Subset
 
-from ..tokenizer import CustomTokenizer
+from ..tokenization.tokenizer import CustomTokenizer
 
 
 def get_max_sequence_length(

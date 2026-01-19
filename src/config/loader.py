@@ -91,6 +91,8 @@ class ConfigLoader:
             learning_rate=optimizer_data.get("learning_rate", 1e-4),
             weight_decay=optimizer_data.get("weight_decay", 1e-5),
             betas=tuple(optimizer_data.get("betas", [0.9, 0.999])),
+            epsilon=optimizer_data.get("epsilon", 1e-8),
+            accumulation_steps=optimizer_data.get("accumulation_steps", 1),
         )
 
         # Extract and build TrainingConfig

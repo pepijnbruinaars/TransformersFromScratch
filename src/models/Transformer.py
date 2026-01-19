@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import logging
 
 from .components import (
     InputEmbedding,
@@ -8,6 +9,7 @@ from .components import (
 )
 from .components.EncoderDecoder import Encoder, Decoder
 
+logger = logging.getLogger(__name__)
 
 def _initialize_weights(module: nn.Module) -> None:
     """Private function to initialize the weights of the transformer model using Xavier initialization.
@@ -88,8 +90,8 @@ class Transformer(nn.Module):
 
         # Initialize parameters using He initialization
         _initialize_weights(self)
-        print("Initialized the transformer model with the following parameters:")
-        print(
+        logger.info("Initialized the transformer model with the following parameters:")
+        logger.info(
             f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, source_length: {source_length}, target_length: {target_length}, source_vocabulary_size: {source_vocabulary_size}, target_vocabulary_size: {target_vocabulary_size}"
         )
 

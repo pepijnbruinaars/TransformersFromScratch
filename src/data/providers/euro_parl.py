@@ -1,22 +1,22 @@
-"""OPUS Books dataset provider."""
+"""EuroParl dataset provider."""
 
 from datasets import Dataset
 from .base import HuggingFaceDataProvider
 from ..config import DataProviderConfig
 
 
-class OpusBooksDataProvider(HuggingFaceDataProvider):
-    """Data provider for the opus_books dataset."""
+class EuroParlDataProvider(HuggingFaceDataProvider):
+    """Data provider for the Helsinki-NLP/europarl dataset."""
 
     def __init__(self, config: DataProviderConfig) -> None:
-        """Initialize OPUS Books data provider.
+        """Initialize EuroParl data provider.
 
         Args:
             config: Data provider configuration.
         """
         super().__init__(
             config=config,
-            dataset_name="opus_books",
+            dataset_name="Helsinki-NLP/europarl",
             dataset_config="en-nl",
         )
 
