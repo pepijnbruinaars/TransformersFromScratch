@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Optional
+from pathlib import Path
 
 @dataclass
 class ModelConfig:
@@ -49,6 +50,7 @@ class TrainingConfig:
     tensorboard_log_dir: str = "logs/"
     tensorboard_flush_frequency: int = 100
     logging_verbosity: int = 1
+    logging_config: Optional["LoggingConfig"] = None
 
 @dataclass
 class CheckpointConfig:
@@ -78,6 +80,24 @@ class SplitConfig:
     train_split: float
     val_split: float
     test_split: float
+
+@dataclass
+class LoggingConfig:
+    """
+    Enhanced TensorBoard logging configuration.
+    """
+    # Periodic metrics frequencies (in steps)
+    per_layer_metrics_frequency: int = 1000
+    attention_visualization_frequency: int = 1000
+    weight_norm_frequency: int = 1000
+
+    # Validation sample settings
+    num_qualitative_samples: int = 10
+    num_random_val_samples: int = 5
+    max_validation_translations: int = 500
+
+    # Sample sentences configuration
+    sample_sentences_path: Optional[Path] = None
 
 @dataclass
 class DataConfig:

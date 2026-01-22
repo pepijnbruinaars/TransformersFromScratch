@@ -1,0 +1,45 @@
+# Sample sentences for qualitative evaluation and attention visualization
+# These sentences are used to:
+# 1. Track translation quality over training epochs (evaluation_pairs)
+# 2. Visualize attention patterns on linguistically complex sentences (attention_probes)
+
+# Fixed evaluation pairs (EN-NL) for qualitative checking
+# Translate these same sentences each epoch to track progress
+evaluation_pairs:
+  - source: "The meeting was postponed because the report had not been approved."
+    target: "De vergadering werd uitgesteld omdat het rapport nog niet was goedgekeurd."
+
+  - source: "She only told him after the deadline had passed."
+    target: "Ze vertelde het hem pas nadat de deadline was verstreken."
+
+  - source: "The keys were eventually found under the table."
+    target: "De sleutels werden uiteindelijk onder de tafel gevonden."
+
+  - source: "He promised to call back, but he never did."
+    target: "Hij beloofde terug te bellen, maar deed dat nooit."
+
+  - source: "The contract that the lawyer the client distrusted drafted collapsed."
+    target: "Het contract dat de advocaat die de cliënt wantrouwde opstelde, ging niet door."
+
+  - source: "Only after the results the committee reviewed were published did they react."
+    target: "Pas nadat de resultaten die de commissie had beoordeeld werden gepubliceerd, reageerden ze."
+
+  - source: "She picked the children up later than expected."
+    target: "Ze haalde de kinderen later op dan verwacht."
+
+  - source: "Nobody said that the plan would actually work."
+    target: "Niemand zei dat het plan daadwerkelijk zou werken."
+
+  - source: "The manager asked whether the system had already been tested."
+    target: "De manager vroeg of het systeem al getest was."
+
+  - source: "Although he disagreed, he went along with the decision."
+    target: "Hoewel hij het er niet mee eens was, ging hij toch akkoord met de beslissing."
+
+# Attention probe sentences (linguistically complex)
+# These sentences have complex syntactic structures that test the model's
+# ability to handle long-range dependencies and nested clauses
+attention_probes:
+  - "Although the old man who the young woman that the doctor trusted criticized smiled politely, the report that he eventually submitted was incomplete."
+  - "The contract that the lawyer the client distrusted drafted collapsed."
+  - "Only after the results the committee reviewed were published did they react."

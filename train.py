@@ -180,6 +180,8 @@ def main():
         experiment_name=experiment_config.experiment_name,
         runpod_config=experiment_config.runpod_config,
     )
+    
+    trainer.load_sample_sentences()
 
     # Train or resume based on arguments
     num_epochs = experiment_config.training_config.num_epochs

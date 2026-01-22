@@ -17,7 +17,7 @@ training:
     min_lr_ratio: 0.1
 
 data:
-  batch_size: 64
+  batch_size: 8
   tokenizer_path: "models/tokenizers/europarl_tokenizer.json"
 
 checkpoint:
