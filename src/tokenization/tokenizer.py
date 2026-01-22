@@ -1,9 +1,11 @@
+import logging
 from pathlib import Path
 from typing import Optional
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers  # type: ignore
 
-from .constants import END_TOKEN, PAD_TOKEN, START_TOKEN, UNKNOWN_TOKEN
+from ..constants import END_TOKEN, PAD_TOKEN, START_TOKEN, UNKNOWN_TOKEN
 
+logger = logging.getLogger(__name__)
 
 class CustomTokenizer:
     def __init__(
@@ -26,7 +28,7 @@ class CustomTokenizer:
                 return
             # If there are any issues loading the tokenizer, initialize a new one
             except (FileNotFoundError, ValueError, Exception):
-                print(
+                logger.info(
                     f"Tokenizer file not found at {path}. Initializing a new tokenizer."
                 )
 
@@ -71,7 +73,7 @@ class CustomTokenizer:
             raise ValueError("No path specified to save the tokenizer.")
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.tokenizer.save(path)
-        print(f"Tokenizer saved to {path}")
+        logger.info(f"Tokenizer saved to {path}")
 
     def load(self, path: Optional[str]) -> None:
         """Loads the tokenizer from the specified path.
@@ -94,7 +96,7 @@ class CustomTokenizer:
         self.path = path
         self._trained = True
 
-        print(f"Tokenizer loaded from {path}")
+        logger.info(f"Tokenizer loaded from {path}")
 
     def encode(self, text: str) -> list[int]:
         """Encodes a string into a list of token IDs.
@@ -156,9 +158,9 @@ class CustomTokenizer:
             text (str): The input text to tokenize and print.
         """
         encoded = self.tokenizer.encode(text)
-        print(f"Original text: {text}")
-        print(f"Tokens: {encoded.tokens}")
-        print(f"Token IDs: {encoded.ids}")
+        logger.info(f"Original text: {text}")
+        logger.info(f"Tokens: {encoded.tokens}")
+        logger.info(f"Token IDs: {encoded.ids}")
 
     @property
     def vocabulary_size(self) -> int:

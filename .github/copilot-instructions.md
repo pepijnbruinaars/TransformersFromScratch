@@ -1,144 +1,18 @@
 # Copilot Instructions: Transformers from Scratch
 
-## Project Overview
-This is a PyTorch implementation of the Transformer architecture (from "Attention Is All You Need" paper) being applied to English-Dutch neural machine translation. The codebase is structured to be educational with extensive type hints and modular components.
+- Core model: encoder-decoder Transformer in [src/models/Transformer.py](src/models/Transformer.py) built from component modules under [src/models/components](src/models/components). Weight init is Normal(0, 0.02) for weights and ones for LayerNorm; projection shares decoder embedding weights.
+- Data pipeline: DataLoaderFactory in [src/data/dataloader.py](src/data/dataloader.py) wraps a provider, preprocessing config, and loader config into train/val/test loaders. Default config comes from `DataPipelineConfig.create_default` (EuroParl, 70/15/15 splits, max length 512, batch 8).
+- Providers: HuggingFace datasets via [src/data/providers/euro_parl.py](src/data/providers/euro_parl.py) and [src/data/providers/opus_books.py](src/data/providers/opus_books.py); local cleaned Wikimedia files via [src/data/providers/wikimedia.py](src/data/providers/wikimedia.py). Providers split deterministically and can cap train size.
+- Preprocessing chain (Compose in [src/data/preprocessing/base.py](src/data/preprocessing/base.py)): tokenize → add special tokens → pad/truncate → build masks. Tokenization/add-special tokens in [src/data/preprocessing/tokenization.py](src/data/preprocessing/tokenization.py); padding in [src/data/preprocessing/padding.py](src/data/preprocessing/padding.py); masks (padding + causal) in [src/data/preprocessing/masking.py](src/data/preprocessing/masking.py). Shapes: masks are `(1, 1, seq_len)` for padding and `(1, seq_len, seq_len)` causal; dataset returns tensors plus masks and text.
+- Tokenizer: `CustomTokenizer` (BPE, `tokenizers` lib) in [src/tokenization/tokenizer.py](src/tokenization/tokenizer.py) with special tokens from [src/constants.py](src/constants.py). `train.py` trains it on all sentences if the JSON doesn’t exist, then saves to `models/tokenizers/europarl_tokenizer.json`.
+- Entry point: [train.py](train.py) loads YAML config, constructs data pipeline, trains tokenizer if needed, builds Transformer with vocab sizes from tokenizer, and hands everything to `Trainer`.
+- Configs: dataclasses in [src/config/base.py](src/config/base.py); YAML parsed by [src/config/loader.py](src/config/loader.py). YAML keys map to `experiment_name`, `model.*`, `training.scheduler.*`, `training.optimizer.*`, and `checkpoint.*`; loader only uses `save_dir`/`save_frequency` (not `save_every_n_minutes`).
+- Training loop: `Trainer` in [src/training/trainer.py](src/training/trainer.py) enables TF32, uses `get_device()` and autocast (bf16 on Ampere+ else fp16), CrossEntropy with PAD ignore + label smoothing, gradient accumulation (`accumulation_steps`), grad clipping, and TensorBoard logging to `logs/<experiment>/<timestamp>`.
+- Scheduler factory: [src/training/scheduler.py](src/training/scheduler.py) supports `constant`, `linear_warmup`, `cosine` (with `min_lr_ratio`), `step_decay`, `exponential_decay`; created after total steps is known. Optimizers currently only Adam via [src/training/utils.py](src/training/utils.py).
+- Checkpointing: time-based and epoch-based saves to `<checkpoint.save_dir>/<timestamp>/` via [src/training/checkpoint.py](src/training/checkpoint.py) storing model/optimizer states, step/epoch, best_val_loss, RNG (CPU + CUDA). `Trainer.resume()` and `_validate_epoch()` are placeholders.
+- Metrics/logging: BLEU/CHRF helpers in [src/training/metrics.py](src/training/metrics.py); TensorBoard helpers in [src/training/logger.py](src/training/logger.py). No evaluation loop wired yet.
+- Dataset shapes/conventions: sequences padded/truncated to `PreprocessingConfig.sequence_config.max_length`; labels are target tokens + END; decoder input is START + target tokens; masks produced per batch, so downstream assumes shape `(batch, 1, seq_len)` for padding broadcast and `(batch, seq_len, seq_len)` causal after dataloader collation.
+- Running training: from repo root run `python train.py`; adjust hyperparameters in [configs/experiment_config.yaml](configs/experiment_config.yaml) (note field names above). Tokenizer training can be slow—cached model prevents re-training.
+- Legacy code: `src/translator/` contains earlier pipeline/checkpoint logic; current entrypoint uses `train.py` + `src/training/*`. Align changes accordingly.
 
-## Architecture Overview
-
-### Core Components
-- **Transformer** (`src/transformer/Transformer.py`): Encoder-decoder architecture with configurable blocks
-  - **Encoder**: Processes source sequence (English)
-  - **Decoder**: Generates target sequence (Dutch) with cross-attention to encoder
-  - Built from reusable components in `src/transformer/components/`
-
-- **Components** (`src/transformer/components/`):
-  - `MultiHeadAttention.py`: Parallel attention heads for different representation subspaces
-  - `FeedForward.py`: Position-wise FFN (d_model → d_ff → d_model)
-  - `InputEmbedding.py`: Vocabulary embeddings
-  - `PositionalEncoding.py`: Sine/cosine positional information
-  - `ResidualConnection.py`: Skip connections around each sublayer
-  - `LayerNormalization.py`: Pre-normalization of sublayer inputs
-  - `EncoderDecoder.py`: Stacked encoder/decoder blocks
-
-- **DecoderOnlyTransformer** (`src/transformer/DecoderOnlyTransformer.py`): Alternative GPT-style architecture (currently incomplete)
-
-### Translation Pipeline (`src/translator/`)
-- **Tokenizer** (`src/tokenizer.py`): BPE tokenizer, shared across source/target languages
-  - Loads/trains from `models/tokenizers/`
-  - Special tokens: `<s>` (START), `</s>` (END), `<pad>` (PAD), `<unk>` (UNK)
-- **Dataset** (`dataset.py`): Converts raw pairs to padded tensors with attention masks
-  - Produces `DatasetPair`: (source, target, src_mask, tgt_mask, label, source_text, target_text)
-- **Training** (`train.py`): Main training loop with TensorBoard logging
-  - Learning rate schedule: Warmup + cosine annealing
-  - Greedy decoding for inference during validation
-  - Model checkpoints in `models/transformer/<timestamp>/`
-
-### Data Flow
-1. Raw data: `data/wikimedia.en-nl.en` and `.nl` (parallel corpus)
-2. Load via `load_data.py`: Splits into train/val/test
-3. Tokenize with `CustomTokenizer`: IDs mapped by tokenizer JSON files
-4. `CustomDataset`: Pads to max_length, adds special tokens, creates masks
-5. `DataLoader`: Batches for training
-6. Model forward pass → loss → backprop → checkpoint
-
-## Key Patterns & Conventions
-
-### Type Hints
-All functions use type annotations (enforced by `src/constants.py` imports and codebase practice). This is critical for maintaining clarity in tensor operations.
-
-### Device Handling
-- Function `get_device()` in `train.py` returns 'cuda', 'mps', or 'cpu'
-- Models moved to device via `.to(device)`
-- TF32 enabled for stability: `torch.backends.cuda.matmul.allow_tf32 = True`
-
-### Tensor Shapes
-- Source/target tensors: `(batch_size, seq_length)`
-- Embeddings: `(batch_size, seq_length, d_model)`
-- Attention masks: `(batch_size, 1, seq_length, seq_length)` (causal for decoder)
-- Logits: `(batch_size, seq_length, vocab_size)`
-
-### Model Configuration
-Config saved as JSON in checkpoint folder (e.g., `models/transformer/20260113_135051/model_config.json`):
-```json
-{"n_blocks": 6, "d_model": 512, "d_ff": 2048, "n_heads": 8, "dropout": 0.1, "source_length": 64, "target_length": 64}
-```
-
-## Critical Workflows
-
-### Training
-```bash
-# Run from workspace root
-python -m src.translator.train
-```
-- Creates timestamped folder in `models/transformer/`
-- Saves best model, epoch checkpoints, loss histories, TensorBoard events
-- Hyperparameters hardcoded in `train.py` (modify for experiments)
-
-### Loading/Resuming Training
-`train_utils.py` has `load_checkpoint()` and `save_checkpoint()` utilities that preserve RNG states (critical for reproducibility across CUDA/numpy/Python).
-
-In addition, a convenience script `src/translator/resume.py` is provided to continue training from an existing run folder. The script:
-
-- Loads the `model_config.json` from the run folder
-- Reconstructs the `Transformer` and dataloaders using the shared tokenizer
-- Loads a checkpoint (`transformer_epoch_N.pt`, `transformer_best.pt`, or `transformer_final.pt`) using `train_utils.load_checkpoint()`
-- Restores model weights, optimizer state (when possible), and RNG states via `train_utils.restore_rng_states()`
-- Continues training for a specified number of additional epochs
-
-Example usage:
-
-```bash
-python -m src.translator.resume \
-  --run-folder models/transformer/20260113_161242 \
-  --checkpoint transformer_epoch_7.pt \
-  --additional-epochs 5 \
-  --device cuda
-```
-
-If `--run-folder` is omitted the script selects the latest run folder. If `--checkpoint` is omitted it will pick the latest checkpoint inside the run folder.
-
-### Inference
-`src/translator/inference.py` uses greedy decoding (`train_utils.greedy_decode_single`) to translate new sentences.
-
-### Evaluation
-`train_utils.py`: `calculate_bleu_chrf()` computes BLEU and CHRF scores on validation set.
-
-## Important Implementation Details
-
-### Attention Masks
-- Encoder: No masking (processes full sequence)
-- Decoder: Causal mask (triangular, prevents attending to future tokens)
-- Function `attention_mask()` in `dataset.py` creates decoder mask
-
-### Weight Initialization
-`_initialize_weights()` in `Transformer.py`: 
-- Linear layer weights: Normal(0, 0.02)
-- Biases: zeros
-- LayerNorm weights: ones (identity initialization)
-
-### Special Tokens
-Defined in `src/constants.py`. Used in `dataset.py`:
-- Encoder input: source_tokens (no wrapping)
-- Decoder input: START_TOKEN + target_tokens (shifted right)
-- Labels: target_tokens + END_TOKEN (shifted right for next-token prediction)
-
-### Checkpoint Structure
-- `model_config.json`: Architecture parameters
-- `transformer_best.pt`, `transformer_epoch_N.pt`: Model state dicts
-- `loss_history.json`, `validation_loss_history.json`: Training curves
-- `splits.json`: Train/val/test indices for reproducibility
-
-## External Dependencies
-- **PyTorch**: Core neural network framework (2.7.1)
-- **HuggingFace tokenizers**: BPE tokenization (0.21.2)
-- **datasets**: Loading Opus Books parallel corpus
-- **sacrebleu**: CHRF metric computation
-- **nltk**: BLEU score calculation
-- **TensorBoard**: Training visualization (SummaryWriter)
-
-## Common Debugging Notes
-- **OOM errors**: Reduce batch size or sequence length in `train.py`
-- **Tokenizer not found**: Ensure `train()` is called before `encode()` on `CustomTokenizer`
-- **Shape mismatches**: Check `src_mask` dimensions in encoder vs decoder attention calls
-- **Loss not decreasing**: Verify learning rate schedule; check if validation data overlaps train data
-- **Greedy decoding stops early**: Ensure `end_id` parameter matches END_TOKEN ID from tokenizer
+If anything here feels off or incomplete, tell me which sections need clarification and I’ll refine it.

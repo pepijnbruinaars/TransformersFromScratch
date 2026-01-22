@@ -1,0 +1,33 @@
+experiment_name: "default_encoder_decoder_translation"
+
+model:
+  architecture: "encoder_decoder"
+  n_blocks: 6
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  dropout_rate: 0.1
+
+training:
+  n_epochs: 20
+  scheduler:
+    type: "cosine"
+    learning_rate: 5e-4
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.1
+
+data:
+  batch_size: 64
+  tokenizer_path: "models/tokenizers/europarl_tokenizer.json"
+
+checkpoint:
+  save_dir: "checkpoints/"
+  save_frequency: 600  # Seconds between time-based checkpoints
+
+# RunPod Spot instance configuration
+runpod:
+  enabled: true
+  base_path: "/runpod-volume"
+  emergency_checkpoint_on_signal: true
+  checkpoint_every_n_steps: 100  # Save last_state.pt every 100 steps
+  auto_resume: true

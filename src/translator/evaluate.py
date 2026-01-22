@@ -11,18 +11,10 @@ import json
 
 from ..constants import PAD_TOKEN, START_TOKEN, END_TOKEN
 from .load_data import load_opus_data, get_max_sequence_length, get_sentences_from_data
-from ..tokenizer import CustomTokenizer
-from ..transformer import Transformer
+from ..tokenization.tokenizer import CustomTokenizer
+from ..models import Transformer
+from ..utils import get_device
 from .dataset import CustomDataset
-
-
-def get_device() -> str:
-    if torch.cuda.is_available():
-        return "cuda"
-    if torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 def find_model_folders() -> list[Path]:
     model_dir = Path("models/transformer")

@@ -9,15 +9,14 @@ from tqdm import tqdm
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from ..tokenizer import CustomTokenizer
-from ..transformer import Transformer
+from ..tokenization.tokenizer import CustomTokenizer
+from ..models import Transformer
 from ..constants import PAD_TOKEN
 from .train_utils import (
     load_checkpoint,
     restore_rng_states,
     find_latest_checkpoint,
     find_latest_run,
-    get_device,
     build_dataloaders,
     create_optimizer,
     create_scheduler,
@@ -28,7 +27,7 @@ from .train_utils import (
     load_loss_histories,
     save_loss_histories,
 )
-
+from ..utils import get_device
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Resume training from a checkpoint")
