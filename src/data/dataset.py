@@ -1,6 +1,5 @@
 """PyTorch Dataset implementation with clean separation of concerns."""
 
-import torch
 from datasets import Dataset
 from torch.utils.data import Dataset as TorchDataset
 from typing import Any, Callable, Optional

@@ -24,11 +24,10 @@ checkpoint:
   save_dir: "checkpoints/"
   save_frequency: 600  # Seconds between time-based checkpoints
 
-# RunPod Spot instance configuration (optional)
-# Uncomment and set enabled: true when deploying to RunPod
-# runpod:
-#   enabled: true
-#   base_path: "/runpod-volume"
-#   emergency_checkpoint_on_signal: true
-#   checkpoint_every_n_steps: 100
-#   auto_resume: true
+# RunPod Spot instance configuration
+runpod:
+  enabled: true
+  base_path: "/runpod-volume"
+  emergency_checkpoint_on_signal: true
+  checkpoint_every_n_steps: 100  # Save last_state.pt every 100 steps
+  auto_resume: true

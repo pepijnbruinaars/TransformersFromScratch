@@ -7,7 +7,10 @@ from .base import (
     SchedulerConfig,
     OptimizerConfig,
     CheckpointConfig,
+    RunPodConfig,
+    DataConfig,
 )
+from .environment import resolve_env_vars
 
 
 class ConfigLoader:
@@ -115,6 +118,31 @@ class ConfigLoader:
             save_frequency=checkpoint_data.get("save_frequency", 1000),
         )
 
+        # Extract and build DataConfig
+        data_config_data = data.get("data", {})
+        data_config = DataConfig(
+            batch_size=data_config_data.get("batch_size", 8),
+            tokenizer_path=data_config_data.get(
+                "tokenizer_path", "models/tokenizers/europarl_tokenizer.json"
+            ),
+        )
+
+        # Extract and build RunPodConfig (optional)
+        runpod_data = data.get("runpod", {})
+        runpod_config = None
+        if runpod_data:
+            runpod_config = RunPodConfig(
+                enabled=runpod_data.get("enabled", False),
+                base_path=resolve_env_vars(
+                    runpod_data.get("base_path", "/runpod-volume")
+                ),
+                emergency_checkpoint_on_signal=runpod_data.get(
+                    "emergency_checkpoint_on_signal", True
+                ),
+                checkpoint_every_n_steps=runpod_data.get("checkpoint_every_n_steps", 100),
+                auto_resume=runpod_data.get("auto_resume", True),
+            )
+
         # Build and return ExperimentConfig
         experiment_name = data.get("experiment_name", "default_experiment")
         experiment_config = ExperimentConfig(
@@ -122,6 +150,8 @@ class ConfigLoader:
             model_config=model_config,
             training_config=training_config,
             checkpoint_config=checkpoint_config,
+            data_config=data_config,
+            runpod_config=runpod_config,
         )
 
         return experiment_config

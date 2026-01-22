@@ -58,6 +58,18 @@ class CheckpointConfig:
     save_dir: str
     save_frequency: int
 
+
+@dataclass
+class RunPodConfig:
+    """
+    RunPod-specific configuration for spot instance support.
+    """
+    enabled: bool = False
+    base_path: str = "/runpod-volume"
+    emergency_checkpoint_on_signal: bool = True
+    checkpoint_every_n_steps: int = 100
+    auto_resume: bool = True
+
 @dataclass
 class SplitConfig:
     """
@@ -72,10 +84,8 @@ class DataConfig:
     """
     Data configuration class for the model.
     """
-    dataset_path: str
     batch_size: int
-    splits: SplitConfig
-    shuffle: bool = True
+    tokenizer_path: str = "models/tokenizers/europarl_tokenizer.json"
 
 @dataclass
 class ExperimentConfig:
@@ -86,3 +96,5 @@ class ExperimentConfig:
     model_config: ModelConfig
     training_config: TrainingConfig
     checkpoint_config: CheckpointConfig
+    data_config: DataConfig
+    runpod_config: Optional[RunPodConfig] = None
