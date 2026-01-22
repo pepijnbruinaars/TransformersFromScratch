@@ -14,18 +14,18 @@ logger = logging.getLogger(__name__)
 class EnvironmentConfig:
     """Environment-aware configuration for cloud/local deployments.
 
-    Supports RunPod by detecting /runpod-volume/ and adjusting all paths
+    Supports RunPod by detecting /workspace/ and adjusting all paths
     to use persistent network storage.
 
     Usage:
         env = EnvironmentConfig()  # Auto-detects RunPod
         checkpoint_dir = env.resolve_path("checkpoints/")
-        # On RunPod: /runpod-volume/checkpoints/
+        # On RunPod: /workspace/checkpoints/
         # Locally: ./checkpoints/
     """
 
-    RUNPOD_VOLUME = "/runpod-volume"
-
+    RUNPOD_VOLUME = "/workspace"
+    
     def __init__(self, base_path: Optional[str] = None):
         """Initialize environment configuration.
 

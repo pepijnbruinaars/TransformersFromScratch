@@ -67,7 +67,7 @@ class RunPodConfig:
     RunPod-specific configuration for spot instance support.
     """
     enabled: bool = False
-    base_path: str = "/runpod-volume"
+    base_path: str = "/workspace"
     emergency_checkpoint_on_signal: bool = True
     checkpoint_every_n_steps: int = 100
     auto_resume: bool = True

@@ -183,7 +183,7 @@ class TrainingLogger:
             step: Current training step.
         """
         for name, param in model.named_parameters():
-            self.writer.add_histogram(name, param.data.cpu().numpy(), step)
+            self.writer.add_histogram(f"Weights/{name}", param.data.cpu().numpy(), step)
 
     def log_attention_maps(
         self,

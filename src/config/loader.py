@@ -134,7 +134,7 @@ class ConfigLoader:
             runpod_config = RunPodConfig(
                 enabled=runpod_data.get("enabled", False),
                 base_path=resolve_env_vars(
-                    runpod_data.get("base_path", "/runpod-volume")
+                    runpod_data.get("base_path", "/workspace")
                 ),
                 emergency_checkpoint_on_signal=runpod_data.get(
                     "emergency_checkpoint_on_signal", True

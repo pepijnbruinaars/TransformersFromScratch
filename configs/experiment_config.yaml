@@ -28,7 +28,7 @@ checkpoint:
 # Uncomment and set enabled: true when deploying to RunPod
 # runpod:
 #   enabled: true
-#   base_path: "/runpod-volume"
+#   base_path: "/workspace"
 #   emergency_checkpoint_on_signal: true
 #   checkpoint_every_n_steps: 100
 #   auto_resume: true

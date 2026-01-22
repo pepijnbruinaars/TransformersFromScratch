@@ -16,18 +16,23 @@ training:
     warmup_ratio: 0.05
     min_lr_ratio: 0.1
 
+logging:
+  per_layer_metrics_frequency: 2000
+  weight_norm_frequency: 2000
+  attention_visualization_frequency: 2000
+
 data:
-  batch_size: 64
+  batch_size: 256
   tokenizer_path: "models/tokenizers/europarl_tokenizer.json"
 
 checkpoint:
   save_dir: "checkpoints/"
-  save_frequency: 600  # Seconds between time-based checkpoints
+  save_frequency: 2000  # Seconds between time-based checkpoints
 
 # RunPod Spot instance configuration
 runpod:
   enabled: true
-  base_path: "/runpod-volume"
+  base_path: "/workspace"
   emergency_checkpoint_on_signal: true
-  checkpoint_every_n_steps: 100  # Save last_state.pt every 100 steps
+  checkpoint_every_n_steps: 2000  # Save last_state.pt every 2000 steps
   auto_resume: true
