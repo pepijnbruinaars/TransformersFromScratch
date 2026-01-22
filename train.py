@@ -83,8 +83,7 @@ def main():
         tokenizer=tokenizer,
         training_config=experiment_config.training_config,
         checkpoint_config=experiment_config.checkpoint_config,
-        tensorboard_writer=SummaryWriter(log_dir="logs/" + datetime.now().strftime("%Y%m%d-%H%M%S"),
-        )
+        experiment_name=experiment_config.experiment_name,
     )
     
     trainer.train(num_epochs=experiment_config.training_config.num_epochs)

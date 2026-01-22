@@ -10,8 +10,9 @@ training:
   n_epochs: 20
   scheduler:
     type: "cosine"
-    peak_lr: 5e-4
-  warmup_step_percentage: 5
+    learning_rate: 5e-4
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.1
 data:
   batch_size: 64
 checkpoint:

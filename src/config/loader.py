@@ -81,14 +81,18 @@ class ConfigLoader:
         scheduler_data = data.get("training", {}).get("scheduler", {})
         scheduler_config = SchedulerConfig(
             name=scheduler_data.get("type"),
-            warmup_ratio=scheduler_data.get("warmup_ratio", 0.05),
+            learning_rate=float(scheduler_data.get("learning_rate", 1e-4)),
+            warmup_ratio=float(scheduler_data.get("warmup_ratio", 0.05)),
+            min_lr_ratio=float(scheduler_data.get("min_lr_ratio", 0.0)),
+            decay_factor=float(scheduler_data.get("decay_factor", 0.1)),
+            decay_steps=scheduler_data.get("decay_steps", None),
+            decay_rate=float(scheduler_data.get("decay_rate", 0.9)),
         )
 
         # Extract and build OptimizerConfig
         optimizer_data = data.get("training", {}).get("optimizer", {})
         optimizer_config = OptimizerConfig(
             name=optimizer_data.get("name", "adam"),
-            learning_rate=optimizer_data.get("learning_rate", 1e-4),
             weight_decay=optimizer_data.get("weight_decay", 1e-5),
             betas=tuple(optimizer_data.get("betas", [0.9, 0.999])),
             epsilon=optimizer_data.get("epsilon", 1e-8),

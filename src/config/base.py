@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 @dataclass
 class ModelConfig:
@@ -17,7 +18,6 @@ class OptimizerConfig:
     Optimizer configuration class for the model.
     """
     name: str
-    learning_rate: float
     weight_decay: float
     betas: tuple
     epsilon: float
@@ -30,7 +30,12 @@ class SchedulerConfig:
     Learning rate scheduler configuration class for the model.
     """
     name: str
+    learning_rate: float = 1e-4
     warmup_ratio: float = 0.05
+    min_lr_ratio: float = 0.0
+    decay_factor: float = 0.1
+    decay_steps: Optional[int] = None
+    decay_rate: float = 0.9
 
 @dataclass
 class TrainingConfig:
