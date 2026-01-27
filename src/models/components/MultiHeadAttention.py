@@ -1,6 +1,7 @@
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import math
 
@@ -40,10 +41,14 @@ class MultiHeadAttention(nn.Module):
     """MultiHeadAttention block used in the encoder and decoder part of the transformer.
 
     Args:
-        nn (_type_): _description_
+        d_model: Dimension of the model
+        n_heads: Number of attention heads
+        dropout: Dropout rate
+        use_flash_attention: If True, uses PyTorch's optimized scaled_dot_product_attention.
+                           If False, uses custom scaled_dot_product_attention implementation.
     """
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float) -> None:
+    def __init__(self, d_model: int, n_heads: int, dropout: float, use_flash_attention: bool = True) -> None:
         super(MultiHeadAttention, self).__init__()
 
         # Assert dimensions
@@ -53,6 +58,8 @@ class MultiHeadAttention(nn.Module):
         self.d_model = d_model
         self.n_heads = n_heads
         self.d_k = d_model // n_heads
+        self.dropout_p = dropout
+        self.use_flash_attention = use_flash_attention
 
         # Query, key and value weights
         self.W_Q = nn.Linear(d_model, d_model)
@@ -72,7 +79,7 @@ class MultiHeadAttention(nn.Module):
         return_attentions: bool = False,
     ):
         batch_size = Q.shape[0]
-        
+
         # Get Q', K', and V'
         query: torch.Tensor = self.W_Q(Q)
         key: torch.Tensor = self.W_K(K)
@@ -83,13 +90,32 @@ class MultiHeadAttention(nn.Module):
         key = key.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         value = value.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
 
-        x, attention_scores = scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            mask,
-            self.dropout,
-        )
+        # Use FlashAttention or custom implementation
+        if self.use_flash_attention and not return_attentions:
+            # Use PyTorch's optimized scaled_dot_product_attention
+            # Convert mask from 0/1 format (0=masked, 1=attend) to boolean format (True=attend, False=masked)
+            attn_mask = None
+            if mask is not None:
+                attn_mask = mask.bool()
+
+            # Dropout is applied automatically by F.scaled_dot_product_attention
+            x = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                attn_mask=attn_mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
+            )
+            attention_scores = None
+        else:
+            # Use custom implementation (also when return_attentions=True)
+            x, attention_scores = scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                mask,
+                self.dropout,
+            )
 
         # Reshape back: (batch, n_heads, seq_len, d_k) -> (batch, seq_len, d_model)
         x = x.transpose(1, 2).reshape(batch_size, -1, self.d_model)

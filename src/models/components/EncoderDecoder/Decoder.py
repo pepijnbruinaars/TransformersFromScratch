@@ -75,15 +75,15 @@ class Decoder(nn.Module):
     """Some Information about Encoder"""
 
     def __init__(
-        self, n_blocks: int, d_model: int, d_ff: int, n_heads: int, dropout: float
+        self, n_blocks: int, d_model: int, d_ff: int, n_heads: int, dropout: float, use_flash_attention: bool = True
     ):
         super(Decoder, self).__init__()
         self.n_blocks = n_blocks
         self.layers = nn.ModuleList(
             [
                 DecoderBlock(
-                    self_attention=MultiHeadAttention(d_model, n_heads, dropout),
-                    cross_attention=MultiHeadAttention(d_model, n_heads, dropout),
+                    self_attention=MultiHeadAttention(d_model, n_heads, dropout, use_flash_attention),
+                    cross_attention=MultiHeadAttention(d_model, n_heads, dropout, use_flash_attention),
                     feed_forward=FeedForward(d_model, d_ff, dropout),
                     dropout=dropout,
                 )

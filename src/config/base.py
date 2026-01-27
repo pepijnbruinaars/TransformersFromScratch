@@ -12,6 +12,7 @@ class ModelConfig:
     d_model: int
     d_ff: int
     dropout_rate: float
+    use_flash_attention: bool = True
 
 @dataclass
 class OptimizerConfig:

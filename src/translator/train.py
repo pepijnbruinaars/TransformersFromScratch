@@ -563,7 +563,8 @@ def main() -> None:
     d_ff = 2048
     n_heads = 8
     dropout = 0.1
-    
+    use_flash_attention = True
+
     model_config = {
         "n_blocks": n_blocks,
         "d_model": d_model,
@@ -573,8 +574,9 @@ def main() -> None:
         "source_length": max_sequence_length,
         "target_length": max_sequence_length,
         "vocabulary_size": tokenizer.vocabulary_size,
+        "use_flash_attention": use_flash_attention,
     }
-    
+
     transformer = Transformer(
         n_blocks=n_blocks,
         d_model=d_model,
@@ -585,6 +587,7 @@ def main() -> None:
         target_length=max_sequence_length,
         source_vocabulary_size=tokenizer.vocabulary_size,
         target_vocabulary_size=tokenizer.vocabulary_size,
+        use_flash_attention=use_flash_attention,
     )
     
     logger.info(transformer)

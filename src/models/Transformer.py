@@ -45,6 +45,7 @@ class Transformer(nn.Module):
         target_length: int,
         source_vocabulary_size: int,
         target_vocabulary_size: int,
+        use_flash_attention: bool = True,
     ) -> None:
         """Create a new Transformer model.
 
@@ -60,6 +61,7 @@ class Transformer(nn.Module):
             target_length (int): The maximum length of the output sequence that the model can handle. This is used to create positional encodings and input embeddings.
             source_vocabulary_size (int): The size of the vocabulary for the input sequence. This is used to create the input embedding layer.
             target_vocabulary_size (int): The size of the vocabulary for the output sequence. This is used to create the output embedding layer and the projection layer.
+            use_flash_attention (bool): If True, uses PyTorch's optimized scaled_dot_product_attention. If False, uses custom implementation. Defaults to True.
         """
         super(Transformer, self).__init__()
         self.encoder_embedding = InputEmbedding(d_model, source_vocabulary_size)
@@ -76,6 +78,7 @@ class Transformer(nn.Module):
             d_ff=d_ff,
             n_heads=n_heads,
             dropout=dropout,
+            use_flash_attention=use_flash_attention,
         )
         self.decoder = Decoder(
             n_blocks=n_blocks,
@@ -83,6 +86,7 @@ class Transformer(nn.Module):
             d_ff=d_ff,
             n_heads=n_heads,
             dropout=dropout,
+            use_flash_attention=use_flash_attention,
         )
         self.projection_layer = ProjectionLayer(d_model, target_vocabulary_size)
 
@@ -92,7 +96,7 @@ class Transformer(nn.Module):
         _initialize_weights(self)
         logger.info("Initialized the transformer model with the following parameters:")
         logger.info(
-            f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, source_length: {source_length}, target_length: {target_length}, source_vocabulary_size: {source_vocabulary_size}, target_vocabulary_size: {target_vocabulary_size}"
+            f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, source_length: {source_length}, target_length: {target_length}, source_vocabulary_size: {source_vocabulary_size}, target_vocabulary_size: {target_vocabulary_size}, use_flash_attention: {use_flash_attention}"
         )
 
     def encode(self, x: torch.Tensor, mask: torch.Tensor, return_attentions: bool = False):

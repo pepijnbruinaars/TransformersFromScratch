@@ -86,6 +86,7 @@ def main() -> None:
         target_length=sequence_length,
         source_vocabulary_size=model_config.get("vocabulary_size", tokenizer.vocabulary_size),
         target_vocabulary_size=model_config.get("vocabulary_size", tokenizer.vocabulary_size),
+        use_flash_attention=model_config.get("use_flash_attention", True),
     )
 
     transformer.to(device)
