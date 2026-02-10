@@ -130,6 +130,7 @@ class Trainer:
 
         logger.info(f"Using device: {self.device}")
         logger.info(f"Logging to: {experiment_log_dir}")
+        logger.info(f"Gradient accumulation steps: {self.accumulation_steps}")
 
     def _initialize_scheduler(self, num_epochs: int) -> None:
         """Initialize the learning rate scheduler."""
@@ -206,6 +207,36 @@ class Trainer:
         target_tokens = (target != pad_id).sum().item()
 
         return source_tokens + target_tokens
+
+    def _compute_padding_ratio_gpu(
+        self, source_mask: torch.Tensor, target_mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Compute padding ratio on GPU without CPU sync.
+
+        Args:
+            source_mask: Source attention mask tensor on device.
+            target_mask: Target attention mask tensor on device.
+
+        Returns:
+            Tensor with padding ratio (call .item() to get scalar).
+        """
+        total = source_mask.numel() + target_mask.numel()
+        padding = (source_mask == 0).sum() + (target_mask == 0).sum()
+        return padding.float() / total
+
+    def _count_non_padding_tokens_gpu(
+        self, source_mask: torch.Tensor, target_mask: torch.Tensor
+    ) -> torch.Tensor:
+        """Count non-padding tokens on GPU without CPU sync.
+
+        Args:
+            source_mask: Source attention mask tensor on device.
+            target_mask: Target attention mask tensor on device.
+
+        Returns:
+            Tensor with token count (call .item() to get scalar).
+        """
+        return (source_mask != 0).sum() + (target_mask != 0).sum()
 
     def _create_source_mask(self, source: torch.Tensor) -> torch.Tensor:
         """Create attention mask for source sequence.
@@ -371,13 +402,15 @@ class Trainer:
 
         return encoder_attentions, final_decoder_attentions or {}, source_token_strs, target_token_strs
 
-    def _log_periodic_metrics(self, step: int) -> None:
-        """Log metrics that are expensive to compute (every N steps).
+    def _log_periodic_metrics_lightweight(self, step: int) -> None:
+        """Log lightweight metrics (every N steps).
+
+        These are cheap operations that don't require CPU-GPU sync or model state transfer.
 
         Args:
             step: Current training step.
         """
-        logger.info(f"Logging periodic metrics at step {step}")
+        logger.info(f"Logging lightweight metrics at step {step}")
 
         # Layer-wise gradient norms
         self.tb_logger.log_layer_gradient_norms(self.model, step)
@@ -385,10 +418,20 @@ class Trainer:
         # Weight norms
         self.tb_logger.log_weight_norms(self.model, step)
 
+    def _log_periodic_metrics_expensive(self, step: int) -> None:
+        """Log expensive metrics (every N*5 steps).
+
+        These are expensive operations that involve CPU-GPU sync or full model state transfer.
+
+        Args:
+            step: Current training step.
+        """
+        logger.info(f"Logging expensive metrics at step {step}")
+
         # Full weight histograms (expensive: CPU transfer for every parameter)
         self.tb_logger.log_weight_histograms(self.model, step)
 
-        # Attention visualization for probe sentences
+        # Attention visualization for probe sentences (expensive: runs autoregressive decoding)
         if self.sample_sentences:
             for i, sentence in enumerate(self.sample_sentences.attention_probes[:3]):
                 try:
@@ -405,6 +448,22 @@ class Trainer:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to log attention for sentence {i}: {e}")
+
+    def _log_periodic_metrics(self, step: int) -> None:
+        """Log periodic metrics (calls lightweight and expensive variants).
+
+        Lightweight metrics are logged every N steps.
+        Expensive metrics are logged every N*5 steps.
+
+        Args:
+            step: Current training step.
+        """
+        # Always log lightweight metrics
+        self._log_periodic_metrics_lightweight(step)
+
+        # Only log expensive metrics every 5x the frequency
+        if step % (self.logging_config.per_layer_metrics_frequency * 5) == 0:
+            self._log_periodic_metrics_expensive(step)
 
     def _log_qualitative_samples(self, step: int) -> None:
         """Log qualitative translation samples.
@@ -589,16 +648,16 @@ class Trainer:
                 save_emergency_checkpoint(self)
                 return True  # Signal to stop training
 
-            # Compute metrics BEFORE moving to device (avoids GPU-CPU sync)
-            padding_ratio = self._compute_padding_ratio(batch)
-            num_tokens = self._count_non_padding_tokens(batch)
+            # Prepare inputs - move to device with non_blocking=True for async transfer
+            source = batch["source"].to(self.device, non_blocking=True)
+            target = batch["target"].to(self.device, non_blocking=True)
+            source_mask = batch["source_mask"].to(self.device, non_blocking=True)
+            target_mask = batch["target_mask"].to(self.device, non_blocking=True)
+            label = batch["label"].to(self.device, non_blocking=True)
 
-            # Prepare inputs
-            source = batch["source"].to(self.device)
-            target = batch["target"].to(self.device)
-            source_mask = batch["source_mask"].to(self.device)
-            target_mask = batch["target_mask"].to(self.device)
-            label = batch["label"].to(self.device)
+            # Compute metrics on GPU (deferred from CPU sync)
+            padding_ratio_tensor = self._compute_padding_ratio_gpu(source_mask, target_mask)
+            num_tokens_tensor = self._count_non_padding_tokens_gpu(source_mask, target_mask)
 
             loss, grad_norm = self._training_step(
                 step, source, target, source_mask, target_mask, label
@@ -619,12 +678,14 @@ class Trainer:
             # Perplexity
             self.tb_logger.log_perplexity(loss, current_step)
 
-            # Padding ratio
+            # Padding ratio (sync to CPU only for logging)
+            padding_ratio = padding_ratio_tensor.item()
             self.tb_logger.log_padding_ratio(padding_ratio, current_step)
 
             # Throughput
             step_time = time.time() - step_start_time
             if step_time > 0:
+                num_tokens = num_tokens_tensor.item()  # Sync to CPU only for logging
                 iters_per_sec = 1.0 / step_time
                 tokens_per_sec = num_tokens / step_time
                 self.tb_logger.log_throughput(current_step, iters_per_sec, tokens_per_sec)
@@ -684,11 +745,11 @@ class Trainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_dataloader, desc="Validation"):
-                source = batch["source"].to(self.device)
-                target = batch["target"].to(self.device)
-                source_mask = batch["source_mask"].to(self.device)
-                target_mask = batch["target_mask"].to(self.device)
-                label = batch["label"].to(self.device)
+                source = batch["source"].to(self.device, non_blocking=True)
+                target = batch["target"].to(self.device, non_blocking=True)
+                source_mask = batch["source_mask"].to(self.device, non_blocking=True)
+                target_mask = batch["target_mask"].to(self.device, non_blocking=True)
+                label = batch["label"].to(self.device, non_blocking=True)
 
                 # Forward pass
                 output = self.model(source, target, source_mask, target_mask)

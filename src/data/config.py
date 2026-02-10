@@ -62,6 +62,7 @@ class PreprocessingConfig:
     return_attention_mask: bool = True
     return_causal_mask: bool = True
     cache_dir: Optional[Path] = None
+    use_preprocessing_cache: bool = True
 
     def __post_init__(self) -> None:
         if self.cache_dir is not None:
