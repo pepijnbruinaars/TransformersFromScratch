@@ -26,6 +26,8 @@ from src.data import (
     EuroParlDataProvider,
     create_dataloaders_from_config,
 )
+from src.data.providers import PROVIDER_REGISTRY
+from src.data.providers.multi_corpus import MultiCorpusDataProvider
 from src.tokenization.tokenizer import CustomTokenizer
 from src.training.trainer import Trainer
 
@@ -113,14 +115,32 @@ def main():
         tensorboard_log_dir=log_dir,
     )
 
-    # Create data config with batch_size from experiment config
-    data_config = DataPipelineConfig.create_default(
-        provider_name="europarl",
-        max_sequence_length=512,
-        batch_size=experiment_config.data_config.batch_size,
+    # Check if multi-corpus config exists
+    use_multi_corpus = (
+        experiment_config.multi_corpus_config is not None
     )
 
-    provider = EuroParlDataProvider(data_config.provider_config)
+    if use_multi_corpus:
+        logger.info("Using multi-corpus configuration")
+        multi_corpus_config = experiment_config.multi_corpus_config
+
+        # Create multi-corpus provider
+        provider = MultiCorpusDataProvider(
+            config=multi_corpus_config,
+            provider_registry=PROVIDER_REGISTRY,
+        )
+
+        # Use multi-corpus config for dataloaders
+        data_config = multi_corpus_config
+    else:
+        logger.info("Using single-corpus configuration (legacy mode)")
+        # Legacy single-corpus mode (existing behavior)
+        data_config = DataPipelineConfig.create_default(
+            provider_name="europarl",
+            max_sequence_length=512,
+            batch_size=experiment_config.data_config.batch_size,
+        )
+        provider = EuroParlDataProvider(data_config.provider_config)
 
     # Load raw data to train tokenizer
     if experiment_config.training_config.logging_verbosity > 0:

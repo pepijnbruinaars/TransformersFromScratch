@@ -1,6 +1,9 @@
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from ..data.config import MultiCorpusConfig
 
 @dataclass
 class ModelConfig:
@@ -119,3 +122,4 @@ class ExperimentConfig:
     checkpoint_config: CheckpointConfig
     data_config: DataConfig
     runpod_config: Optional[RunPodConfig] = None
+    multi_corpus_config: Optional["MultiCorpusConfig"] = None

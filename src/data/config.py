@@ -101,6 +101,9 @@ class DataProviderConfig:
     local_files: Optional[dict[str, Path]] = None
     deterministic: bool = True
     seed: int = 42
+    # Language pair parameters (for OpenSubtitles and similar datasets)
+    lang1: Optional[str] = None
+    lang2: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.cache_dir is not None:
@@ -166,3 +169,115 @@ class DataPipelineConfig:
                 pin_memory=True,
             ),
         )
+
+
+@dataclass(frozen=True)
+class TextNormalizationConfig:
+    """Configuration for text normalization preprocessing.
+
+    Applied before tokenization to standardize text.
+    """
+    enabled: bool = True
+    unicode_normalization: str = "NFKC"  # "NFC", "NFKC", "NFD", "NFKD", "none"
+    standardize_whitespace: bool = True
+    standardize_quotes: bool = True  # ' → ', " → "
+    standardize_dashes: bool = True  # – → -, — → -
+    lowercase: bool = False
+    remove_control_chars: bool = True
+
+    def __post_init__(self) -> None:
+        valid_norms = {"NFC", "NFKC", "NFD", "NFKD", "none"}
+        if self.unicode_normalization not in valid_norms:
+            raise ValueError(
+                f"unicode_normalization must be one of {valid_norms}, "
+                f"got {self.unicode_normalization}"
+            )
+
+
+@dataclass(frozen=True)
+class DatasetSpec:
+    """Specification for a single dataset within a corpus category.
+
+    Defines which dataset to use and what proportion of the category it represents.
+    """
+    provider_name: str  # e.g., "europarl", "opus_books", "wikimedia"
+    provider_config: DataProviderConfig  # Full config for this provider
+    proportion: float = 1.0  # Proportion within category (0.0-1.0)
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.proportion <= 1.0):
+            raise ValueError(
+                f"proportion must be between 0 and 1, got {self.proportion}"
+            )
+
+
+@dataclass(frozen=True)
+class CategoryConfig:
+    """Configuration for a category of datasets.
+
+    A category groups related datasets (e.g., "legal", "literary", "general")
+    with a category-level proportion and individual dataset proportions.
+    Dataset proportions within the category must sum to 1.0.
+    """
+    name: str
+    proportion: float  # Proportion of final combined dataset (0.0-1.0)
+    datasets: tuple[DatasetSpec, ...]  # Multiple datasets in this category
+
+    def __post_init__(self) -> None:
+        if not (0.0 < self.proportion <= 1.0):
+            raise ValueError(
+                f"Category proportion must be between 0 and 1, got {self.proportion}"
+            )
+        if len(self.datasets) == 0:
+            raise ValueError("Category must have at least one dataset")
+
+        # Validate dataset proportions sum to 1.0
+        dataset_proportion_sum = sum(ds.proportion for ds in self.datasets)
+        if not (0.99 <= dataset_proportion_sum <= 1.01):
+            raise ValueError(
+                f"Dataset proportions within category '{self.name}' must sum to 1.0, "
+                f"got {dataset_proportion_sum}"
+            )
+
+
+@dataclass(frozen=True)
+class MultiCorpusConfig:
+    """Configuration for multi-corpus training with weighted sampling.
+
+    This config allows:
+    1. Grouping datasets into categories (e.g., legal, literary, general)
+    2. Setting proportions at both category and dataset levels
+    3. Text normalization before tokenization
+    4. Two sampling strategies: sequential or interleaved
+
+    Category proportions must sum to 1.0.
+    Dataset proportions within each category must sum to 1.0.
+    """
+    categories: tuple[CategoryConfig, ...]
+    split_config: DatasetSplitConfig
+    preprocessing_config: PreprocessingConfig
+    train_loader_config: DataLoaderConfig
+    val_loader_config: DataLoaderConfig
+    test_loader_config: Optional[DataLoaderConfig] = None
+    normalization_config: Optional[TextNormalizationConfig] = None
+    sampling_strategy: Literal["sequential", "interleaved"] = "interleaved"
+    random_seed: int = 42
+
+    def __post_init__(self) -> None:
+        if len(self.categories) == 0:
+            raise ValueError("At least one category is required")
+
+        # Validate category proportions sum to 1.0
+        category_proportion_sum = sum(cat.proportion for cat in self.categories)
+        if not (0.99 <= category_proportion_sum <= 1.01):
+            raise ValueError(
+                f"Category proportions must sum to 1.0, got {category_proportion_sum}"
+            )
+
+        # Set default normalization config if not provided
+        if self.normalization_config is None:
+            object.__setattr__(
+                self,
+                'normalization_config',
+                TextNormalizationConfig()
+            )
