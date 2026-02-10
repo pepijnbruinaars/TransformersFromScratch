@@ -1,0 +1,146 @@
+experiment_name: "multi_corpus_translation"
+
+model:
+  architecture: "encoder_decoder"
+  n_blocks: 6
+  d_model: 512
+  n_heads: 8
+  d_ff: 2048
+  dropout_rate: 0.1
+  use_flash_attention: true
+
+training:
+  n_epochs: 20
+  scheduler:
+    type: "cosine"
+    learning_rate: 5e-4
+    warmup_ratio: 0.05
+    min_lr_ratio: 0.1
+
+# Standard data config (for backward compatibility)
+data:
+  batch_size: 32
+  tokenizer_path: "models/tokenizers/multi_corpus_tokenizer.json"
+
+checkpoint:
+  save_dir: "checkpoints/"
+  save_frequency: 600
+
+# Multi-corpus configuration
+multi_corpus:
+  # Text normalization (applied before tokenization)
+  normalization:
+    enabled: true
+    unicode_normalization: "NFKC"  # NFC, NFKC, NFD, NFKD, or none
+    standardize_whitespace: true
+    standardize_quotes: true  # ' → ', " → "
+    standardize_dashes: true  # – → -, — → -
+    lowercase: false
+    remove_control_chars: true
+
+  # Sampling strategy: "sequential" or "interleaved"
+  sampling_strategy: "interleaved"
+  random_seed: 42
+
+  # Category definitions with proportions
+  # Category proportions must sum to 1.0
+  categories:
+    # Legal-ish documents (50% of final dataset)
+    - name: "legal-ish"
+      proportion: 0.20
+      datasets:
+        - provider_name: "europarl"
+          dataset_name: "Helsinki-NLP/europarl"
+          dataset_config: "en-nl"
+          split: "train"
+          proportion: 1.0  # 100% of "legal-ish" category = 50% of total
+          # Final proportion: 0.50 × 1.0 = 0.50 (50% of combined dataset)
+
+    # Literary works (20% of final dataset)
+    - name: "literary"
+      proportion: 0.20
+      datasets:
+        - provider_name: "opus_books"
+          dataset_name: "opus_books"
+          dataset_config: "en-nl"
+          split: "train"
+          proportion: 1.0  # 100% of "literary" category = 30% of total
+          # Final proportion: 0.30 × 1.0 = 0.30 (30% of combined dataset)
+
+    # General domain (20% of final dataset)
+    - name: "general"
+      proportion: 0.60
+      datasets:
+        # OpenSubtitles: 100% of "general" category
+        - provider_name: "open_subtitles"
+          dataset_name: "open_subtitles"
+          lang1: "en"
+          lang2: "nl"
+          split: "train"
+          proportion: 1.0  # 100% of "general" = 20% of total
+          # Final proportion: 0.20 × 1.0 = 0.20 (20% of combined dataset)
+
+        # Example with multiple datasets in one category:
+        # If you want to split "general" between multiple sources, you can add more datasets:
+        # - OpenSubtitles proportion: 0.70 (14% of total)
+        # - Wikimedia proportion: 0.30 (6% of total)
+        # Dataset proportions within category must sum to 1.0!
+
+  # Dataset splitting (applied to combined dataset)
+  split:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+    max_train_size: null  # Optional: cap training set size
+
+  # Preprocessing configuration
+  preprocessing:
+    sequence:
+      max_length: 512
+      truncation: true
+      padding: "max_length"
+    translation:
+      source_lang: "en"
+      target_lang: "nl"
+      source_field: "en"
+      target_field: "nl"
+      translation_key: "translation"
+    add_special_tokens: true
+    return_attention_mask: true
+    return_causal_mask: true
+
+  # DataLoader settings
+  train_loader:
+    batch_size: 32
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    drop_last: false
+
+  val_loader:
+    batch_size: 32
+    shuffle: false
+    num_workers: 4
+    pin_memory: true
+    drop_last: false
+
+  test_loader:
+    batch_size: 32
+    shuffle: false
+    num_workers: 4
+    pin_memory: true
+    drop_last: false
+
+# Summary of final dataset composition:
+# - europarl: 50% (legal-ish category: 0.50 × 1.0)
+# - opus_books: 30% (literary category: 0.30 × 1.0)
+# - open_subtitles: 20% (general category: 0.20 × 1.0)
+# Total: 100% ✓
+#
+# Important validation rules:
+# 1. Category proportions must sum to 1.0 (±0.01 tolerance)
+# 2. Dataset proportions within each category must sum to 1.0 (±0.01 tolerance)
+# 3. Final proportion = category_proportion × dataset_proportion
+#
+# Note: OpenSubtitles uses lang1/lang2 parameters instead of dataset_config
+# Available language pairs: http://opus.nlpl.eu/OpenSubtitles.php

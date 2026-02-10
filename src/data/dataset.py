@@ -11,6 +11,7 @@ from .preprocessing import (
     PaddingTransform,
     MaskingTransform,
     Compose,
+    TextNormalizationTransform,
 )
 from ..tokenization.tokenizer import CustomTokenizer
 from .config import PreprocessingConfig
@@ -61,15 +62,36 @@ class TranslationDataset(TorchDataset):
         Returns:
             Composed transform pipeline.
         """
-        transforms: list[Any] = [
+        transforms: list[Any] = []
+
+        # Add text normalization as FIRST step if configured
+        if hasattr(self.config, 'normalization_config') and \
+           self.config.normalization_config and \
+           self.config.normalization_config.enabled:
+            transforms.append(
+                TextNormalizationTransform(
+                    unicode_normalization=self.config.normalization_config.unicode_normalization,
+                    standardize_whitespace=self.config.normalization_config.standardize_whitespace,
+                    standardize_quotes=self.config.normalization_config.standardize_quotes,
+                    standardize_dashes=self.config.normalization_config.standardize_dashes,
+                    lowercase=self.config.normalization_config.lowercase,
+                    remove_control_chars=self.config.normalization_config.remove_control_chars,
+                    source_field=self.config.translation_config.source_field,
+                    target_field=self.config.translation_config.target_field,
+                    translation_key=self.config.translation_config.translation_key,
+                )
+            )
+
+        # Then tokenization
+        transforms.append(
             TokenizationTransform(
                 source_tokenizer=self.source_tokenizer,
                 target_tokenizer=self.target_tokenizer,
                 source_field=self.config.translation_config.source_field,
                 target_field=self.config.translation_config.target_field,
                 translation_key=self.config.translation_config.translation_key,
-            ),
-        ]
+            )
+        )
 
         if self.config.add_special_tokens:
             transforms.append(

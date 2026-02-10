@@ -1,5 +1,6 @@
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import yaml
+from pathlib import Path
 from .base import (
     ExperimentConfig,
     ModelConfig,
@@ -11,6 +12,18 @@ from .base import (
     DataConfig,
 )
 from .environment import resolve_env_vars
+from ..data.config import (
+    MultiCorpusConfig,
+    CategoryConfig,
+    DatasetSpec,
+    TextNormalizationConfig,
+    DataProviderConfig,
+    DatasetSplitConfig,
+    PreprocessingConfig,
+    SequenceConfig,
+    TranslationConfig,
+    DataLoaderConfig,
+)
 
 
 class ConfigLoader:
@@ -143,6 +156,13 @@ class ConfigLoader:
                 auto_resume=runpod_data.get("auto_resume", True),
             )
 
+        # Extract and build MultiCorpusConfig (optional)
+        multi_corpus_config = None
+        if "multi_corpus" in data:
+            multi_corpus_config = ConfigLoader._parse_multi_corpus_config(
+                data["multi_corpus"]
+            )
+
         # Build and return ExperimentConfig
         experiment_name = data.get("experiment_name", "default_experiment")
         experiment_config = ExperimentConfig(
@@ -152,6 +172,7 @@ class ConfigLoader:
             checkpoint_config=checkpoint_config,
             data_config=data_config,
             runpod_config=runpod_config,
+            multi_corpus_config=multi_corpus_config,
         )
 
         return experiment_config
@@ -214,3 +235,140 @@ class ConfigLoader:
             result["checkpoint"] = result.pop("checkpoint_config")
 
         return result
+
+    @staticmethod
+    def _parse_multi_corpus_config(data: Dict[str, Any]) -> MultiCorpusConfig:
+        """Parse multi-corpus configuration from YAML dictionary.
+
+        Args:
+            data: Dictionary from YAML multi_corpus section
+
+        Returns:
+            MultiCorpusConfig: Parsed multi-corpus configuration
+        """
+        # Parse normalization config
+        norm_data = data.get("normalization", {})
+        normalization_config = TextNormalizationConfig(
+            enabled=norm_data.get("enabled", True),
+            unicode_normalization=norm_data.get("unicode_normalization", "NFKC"),
+            standardize_whitespace=norm_data.get("standardize_whitespace", True),
+            standardize_quotes=norm_data.get("standardize_quotes", True),
+            standardize_dashes=norm_data.get("standardize_dashes", True),
+            lowercase=norm_data.get("lowercase", False),
+            remove_control_chars=norm_data.get("remove_control_chars", True),
+        )
+
+        # Parse categories
+        categories = []
+        for cat_data in data.get("categories", []):
+            # Parse dataset specs
+            datasets = []
+            for ds_data in cat_data.get("datasets", []):
+                # Build provider config
+                provider_config = DataProviderConfig(
+                    name=ds_data.get("provider_name"),
+                    dataset_name=ds_data.get("dataset_name"),
+                    dataset_config=ds_data.get("dataset_config"),
+                    split=ds_data.get("split", "train"),
+                    cache_dir=Path(ds_data["cache_dir"]) if "cache_dir" in ds_data else None,
+                    local_files={
+                        k: Path(v) for k, v in ds_data["local_files"].items()
+                    } if "local_files" in ds_data else None,
+                    deterministic=True,
+                    seed=data.get("random_seed", 42),
+                    lang1=ds_data.get("lang1"),
+                    lang2=ds_data.get("lang2"),
+                )
+
+                dataset_spec = DatasetSpec(
+                    provider_name=ds_data.get("provider_name"),
+                    provider_config=provider_config,
+                    proportion=ds_data.get("proportion", 1.0),
+                )
+                datasets.append(dataset_spec)
+
+            category = CategoryConfig(
+                name=cat_data.get("name"),
+                proportion=cat_data.get("proportion", 1.0),
+                datasets=tuple(datasets),
+            )
+            categories.append(category)
+
+        # Parse split config
+        split_data = data.get("split", {})
+        split_config = DatasetSplitConfig(
+            train=split_data.get("train", 0.8),
+            val=split_data.get("val", 0.1),
+            test=split_data.get("test", 0.1),
+            max_train_size=split_data.get("max_train_size"),
+        )
+
+        # Parse preprocessing config
+        prep_data = data.get("preprocessing", {})
+        seq_data = prep_data.get("sequence", {})
+        trans_data = prep_data.get("translation", {})
+
+        sequence_config = SequenceConfig(
+            max_length=seq_data.get("max_length", 512),
+            truncation=seq_data.get("truncation", True),
+            padding=seq_data.get("padding", "max_length"),
+        )
+
+        translation_config = TranslationConfig(
+            source_lang=trans_data.get("source_lang", "en"),
+            target_lang=trans_data.get("target_lang", "nl"),
+            source_field=trans_data.get("source_field", "en"),
+            target_field=trans_data.get("target_field", "nl"),
+            translation_key=trans_data.get("translation_key", "translation"),
+        )
+
+        preprocessing_config = PreprocessingConfig(
+            sequence_config=sequence_config,
+            translation_config=translation_config,
+            add_special_tokens=prep_data.get("add_special_tokens", True),
+            return_attention_mask=prep_data.get("return_attention_mask", True),
+            return_causal_mask=prep_data.get("return_causal_mask", True),
+            cache_dir=Path(prep_data["cache_dir"]) if "cache_dir" in prep_data else None,
+        )
+
+        # Parse dataloader configs
+        train_loader_data = data.get("train_loader", {})
+        train_loader_config = DataLoaderConfig(
+            batch_size=train_loader_data.get("batch_size", 32),
+            shuffle=train_loader_data.get("shuffle", True),
+            num_workers=train_loader_data.get("num_workers", 0),
+            pin_memory=train_loader_data.get("pin_memory", True),
+            drop_last=train_loader_data.get("drop_last", False),
+        )
+
+        val_loader_data = data.get("val_loader", {})
+        val_loader_config = DataLoaderConfig(
+            batch_size=val_loader_data.get("batch_size", 32),
+            shuffle=val_loader_data.get("shuffle", False),
+            num_workers=val_loader_data.get("num_workers", 0),
+            pin_memory=val_loader_data.get("pin_memory", True),
+            drop_last=val_loader_data.get("drop_last", False),
+        )
+
+        test_loader_config = None
+        if "test_loader" in data:
+            test_loader_data = data["test_loader"]
+            test_loader_config = DataLoaderConfig(
+                batch_size=test_loader_data.get("batch_size", 32),
+                shuffle=test_loader_data.get("shuffle", False),
+                num_workers=test_loader_data.get("num_workers", 0),
+                pin_memory=test_loader_data.get("pin_memory", True),
+                drop_last=test_loader_data.get("drop_last", False),
+            )
+
+        return MultiCorpusConfig(
+            categories=tuple(categories),
+            split_config=split_config,
+            preprocessing_config=preprocessing_config,
+            train_loader_config=train_loader_config,
+            val_loader_config=val_loader_config,
+            test_loader_config=test_loader_config,
+            normalization_config=normalization_config,
+            sampling_strategy=data.get("sampling_strategy", "interleaved"),
+            random_seed=data.get("random_seed", 42),
+        )
