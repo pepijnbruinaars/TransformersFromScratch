@@ -54,10 +54,21 @@ class TranslationConfig:
 
 
 @dataclass(frozen=True)
+class GenerativeConfig:
+    """Configuration for generative/causal language modeling task."""
+    text_field: str = "text"
+
+    def __post_init__(self) -> None:
+        if not self.text_field:
+            raise ValueError("text_field must be specified")
+
+
+@dataclass(frozen=True)
 class PreprocessingConfig:
     """Configuration for preprocessing pipeline."""
     sequence_config: SequenceConfig
-    translation_config: TranslationConfig
+    translation_config: Optional[TranslationConfig] = None
+    generative_config: Optional[GenerativeConfig] = None
     add_special_tokens: bool = True
     return_attention_mask: bool = True
     return_causal_mask: bool = True
@@ -67,6 +78,9 @@ class PreprocessingConfig:
     def __post_init__(self) -> None:
         if self.cache_dir is not None:
             object.__setattr__(self, 'cache_dir', Path(self.cache_dir))
+        # Ensure either translation or generative config is provided
+        if self.translation_config is None and self.generative_config is None:
+            raise ValueError("Either translation_config or generative_config must be provided")
 
 
 @dataclass

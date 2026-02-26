@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import logging
@@ -11,24 +12,33 @@ from .components.EncoderDecoder import Encoder, Decoder
 
 logger = logging.getLogger(__name__)
 
-def _initialize_weights(module: nn.Module) -> None:
-    """Private function to initialize the weights of the transformer model using Xavier initialization.
+def _initialize_weights(module: nn.Module, n_blocks: int) -> None:
+    """Private function to initialize the weights of the transformer model using normal, zeros, ones, and scaled constants.
 
     Args:
         module (nn.Module): The module to initialize.
+        n_blocks (int): The number of blocks in the transformer (used for residual connection initialization).
     """
     for name, p in module.named_parameters():
         if p.dim() > 1:
             # Weights of linear layers and embeddings
             nn.init.normal_(p, mean=0.0, std=0.02)
+            if "out_proj" in name or "fc2" in name:
+                # Scaling formula: 1 / sqrt(2 * number of layers)
+                p.data.copy_(p.data / np.sqrt(2 * n_blocks))
         else:
             # Biases and LayerNorm parameters
             if "bias" in name:
                 nn.init.zeros_(p)
-            elif "weight" in name:
+            # Residual connections are initialized to 1/sqrt(2N) where N is the number of blocks
+            elif "normalization.weight" in name:
                 # This specifically targets LayerNorm weights (gamma)
                 # We want them to start at 1.0 (identity)
                 nn.init.ones_(p)
+            elif "residual" in name and "weight" in name:
+                # Catch-all if you have other weights in ResidualConnection
+                scale = 1 / np.sqrt(2 * n_blocks)
+                nn.init.constant_(p, scale)
 
 
 class Transformer(nn.Module):
@@ -93,7 +103,7 @@ class Transformer(nn.Module):
         self.projection_layer.weight = self.decoder_embedding.embedding.weight
 
         # Initialize parameters using He initialization
-        _initialize_weights(self)
+        _initialize_weights(self, n_blocks)
         logger.info("Initialized the transformer model with the following parameters:")
         logger.info(
             f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, source_length: {source_length}, target_length: {target_length}, source_vocabulary_size: {source_vocabulary_size}, target_vocabulary_size: {target_vocabulary_size}, use_flash_attention: {use_flash_attention}"

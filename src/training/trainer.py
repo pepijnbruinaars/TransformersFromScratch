@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LRScheduler
 from tqdm import tqdm
 
-from src.config.base import CheckpointConfig, LoggingConfig, TrainingConfig, RunPodConfig
+from src.config.base import CheckpointConfig, LoggingConfig, TrainingConfig, RunPodConfig, GenerationConfig
 from src.constants import END_TOKEN, PAD_TOKEN, START_TOKEN
 from src.tokenization.tokenizer import CustomTokenizer
 from src.training.utils import create_optimizer
@@ -36,6 +36,7 @@ from src.training.checkpoint import (
 from src.training.logger import TrainingLogger
 from src.training.metrics import Metrics
 from src.training.sample_loader import SampleSentences
+from src.training.generation import GenerationSampler
 from src.training.scheduler import SchedulerFactory
 from src.training.signals import GracefulKiller
 from src.training.resume import (
@@ -68,6 +69,8 @@ class Trainer:
         checkpoint_config: CheckpointConfig,
         experiment_name: str = "default_experiment",
         runpod_config: Optional[RunPodConfig] = None,
+        model_type: str = "encoder_decoder",  # "encoder_decoder" or "decoder_only"
+        generation_config: Optional[GenerationConfig] = None,
     ):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
@@ -75,6 +78,7 @@ class Trainer:
         self.device = get_device()
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.experiment_name = experiment_name
+        self.model_type = model_type
         self.training_state = TrainingState(
             epoch=0,
             step=0,
@@ -86,6 +90,7 @@ class Trainer:
         self.training_config = training_config
         self.checkpoint_config = checkpoint_config
         self.runpod_config = runpod_config
+        self.generation_config = generation_config
         self.accumulation_steps = training_config.optimizer_config.accumulation_steps
 
         self.train_dataloader = train_dataloader
@@ -466,53 +471,96 @@ class Trainer:
             self._log_periodic_metrics_expensive(step)
 
     def _log_qualitative_samples(self, step: int) -> None:
-        """Log qualitative translation samples.
+        """Log qualitative samples (translations or generations).
+
+        For encoder-decoder models: logs translation pairs.
+        For decoder-only models: logs generated text from fixed prompts.
 
         Args:
             step: Current training step.
         """
-        if self.sample_sentences is None:
-            return
-
         samples = []
 
-        # Fixed evaluation pairs
-        num_fixed = min(
-            self.logging_config.num_qualitative_samples,
-            len(self.sample_sentences.evaluation_pairs),
-        )
-        for pair in self.sample_sentences.evaluation_pairs[:num_fixed]:
+        if self.model_type == "decoder_only":
+            # Decoder-only: generate from fixed prompts
+            self._log_decoder_only_samples(step)
+        else:
+            # Encoder-decoder: translate evaluation pairs
+            if self.sample_sentences is None:
+                return
+
+            # Fixed evaluation pairs
+            num_fixed = min(
+                self.logging_config.num_qualitative_samples,
+                len(self.sample_sentences.evaluation_pairs),
+            )
+            for pair in self.sample_sentences.evaluation_pairs[:num_fixed]:
+                try:
+                    prediction = self._translate_single(pair.source)
+                    samples.append((pair.source, pair.target, prediction))
+                except Exception as e:
+                    logger.warning(f"Failed to translate: {pair.source[:50]}... Error: {e}")
+
+            # Random validation samples (if validation dataset supports indexing)
             try:
-                prediction = self._translate_single(pair.source)
-                samples.append((pair.source, pair.target, prediction))
+                val_dataset = self.val_dataloader.dataset
+                len_func = getattr(val_dataset, "__len__", None)
+                getitem_func = getattr(val_dataset, "__getitem__", None)
+                if len_func is not None and getitem_func is not None:
+                    dataset_len: int = len_func()
+                    num_random = min(
+                        self.logging_config.num_random_val_samples, dataset_len
+                    )
+                    if num_random > 0:
+                        indices = random.sample(range(dataset_len), num_random)
+                        for idx in indices:
+                            item = getitem_func(idx)
+                            # Check if raw text is available
+                            if "source_text" in item and "target_text" in item:
+                                source_text = item["source_text"]
+                                target_text = item["target_text"]
+                                prediction = self._translate_single(source_text)
+                                samples.append((source_text, target_text, prediction))
             except Exception as e:
-                logger.warning(f"Failed to translate: {pair.source[:50]}... Error: {e}")
+                logger.warning(f"Could not sample from validation set: {e}")
 
-        # Random validation samples (if validation dataset supports indexing)
+            if samples:
+                self.tb_logger.log_text_samples(samples, step)
+
+    def _log_decoder_only_samples(self, step: int) -> None:
+        """Generate and log samples for decoder-only models.
+
+        Args:
+            step: Current training step.
+        """
         try:
-            val_dataset = self.val_dataloader.dataset
-            len_func = getattr(val_dataset, "__len__", None)
-            getitem_func = getattr(val_dataset, "__getitem__", None)
-            if len_func is not None and getitem_func is not None:
-                dataset_len: int = len_func()
-                num_random = min(
-                    self.logging_config.num_random_val_samples, dataset_len
-                )
-                if num_random > 0:
-                    indices = random.sample(range(dataset_len), num_random)
-                    for idx in indices:
-                        item = getitem_func(idx)
-                        # Check if raw text is available
-                        if "source_text" in item and "target_text" in item:
-                            source_text = item["source_text"]
-                            target_text = item["target_text"]
-                            prediction = self._translate_single(source_text)
-                            samples.append((source_text, target_text, prediction))
-        except Exception as e:
-            logger.warning(f"Could not sample from validation set: {e}")
+            if not self.generation_config:
+                logger.debug("generation_config not provided, skipping generation samples")
+                return
 
-        if samples:
-            self.tb_logger.log_text_samples(samples, step)
+            # Create generation sampler
+            prompts = self.generation_config.prompts or ["Once upon a time"]
+            temperatures = self.generation_config.temperatures or [0.8, 1.0]
+
+            sampler = GenerationSampler(
+                model=self.model,
+                tokenizer=self.tokenizer,
+                prompts=prompts,
+                temperatures=temperatures,
+                max_new_tokens=self.generation_config.max_new_tokens,
+                top_k=getattr(self.generation_config, 'top_k', None),
+                top_p=getattr(self.generation_config, 'top_p', 0.95),
+            )
+
+            # Generate samples
+            generated_text = sampler.sample()
+
+            # Log as text in TensorBoard
+            self.tb_logger.writer.add_text("Generations/Samples", generated_text, step)
+            logger.info(f"Logged decoder-only generation samples at step {step}")
+
+        except Exception as e:
+            logger.warning(f"Failed to generate samples: {e}")
 
     def train(self, num_epochs: int, start_epoch: int = 0) -> None:
         """Train the model for the specified number of epochs.
@@ -648,20 +696,38 @@ class Trainer:
                 save_emergency_checkpoint(self)
                 return True  # Signal to stop training
 
-            # Prepare inputs - move to device with non_blocking=True for async transfer
-            source = batch["source"].to(self.device, non_blocking=True)
-            target = batch["target"].to(self.device, non_blocking=True)
-            source_mask = batch["source_mask"].to(self.device, non_blocking=True)
-            target_mask = batch["target_mask"].to(self.device, non_blocking=True)
-            label = batch["label"].to(self.device, non_blocking=True)
+            # Handle different batch formats based on model type
+            if self.model_type == "decoder_only":
+                # Generative model batch format
+                input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                target_ids = batch["target_ids"].to(self.device, non_blocking=True)
+                attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
+                causal_mask = batch["causal_mask"].to(self.device, non_blocking=True)
 
-            # Compute metrics on GPU (deferred from CPU sync)
-            padding_ratio_tensor = self._compute_padding_ratio_gpu(source_mask, target_mask)
-            num_tokens_tensor = self._count_non_padding_tokens_gpu(source_mask, target_mask)
+                loss, grad_norm = self._training_step_decoder_only(
+                    step, input_ids, target_ids, attention_mask, causal_mask
+                )
 
-            loss, grad_norm = self._training_step(
-                step, source, target, source_mask, target_mask, label
-            )
+                # For generative, compute metrics differently
+                padding_ratio_tensor = torch.tensor(
+                    (~attention_mask).float().mean().item(), device=self.device
+                )
+                num_tokens_tensor = attention_mask.float().sum()
+            else:
+                # Encoder-decoder model batch format
+                source = batch["source"].to(self.device, non_blocking=True)
+                target = batch["target"].to(self.device, non_blocking=True)
+                source_mask = batch["source_mask"].to(self.device, non_blocking=True)
+                target_mask = batch["target_mask"].to(self.device, non_blocking=True)
+                label = batch["label"].to(self.device, non_blocking=True)
+
+                # Compute metrics on GPU (deferred from CPU sync)
+                padding_ratio_tensor = self._compute_padding_ratio_gpu(source_mask, target_mask)
+                num_tokens_tensor = self._count_non_padding_tokens_gpu(source_mask, target_mask)
+
+                loss, grad_norm = self._training_step(
+                    step, source, target, source_mask, target_mask, label
+                )
 
             current_step = self.training_state.step
 
@@ -706,6 +772,12 @@ class Trainer:
 
             self.training_state.step += 1
 
+            # === QUALITATIVE EVALUATION (EVERY 2000 OPTIMIZER STEPS) ===
+            if self.training_state.step > 0 and self.training_state.step % 2000 == 0:
+                logger.info(f"Running qualitative evaluation at step {self.training_state.step}")
+                self._log_qualitative_samples(self.training_state.step)
+                self.tb_logger.flush()  # Ensure samples are written immediately
+
             # Save last_state periodically for spot instance resilience
             if self.training_state.step % self._checkpoint_every_n_steps == 0:
                 save_last_state_checkpoint(self)
@@ -745,14 +817,25 @@ class Trainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_dataloader, desc="Validation"):
-                source = batch["source"].to(self.device, non_blocking=True)
-                target = batch["target"].to(self.device, non_blocking=True)
-                source_mask = batch["source_mask"].to(self.device, non_blocking=True)
-                target_mask = batch["target_mask"].to(self.device, non_blocking=True)
-                label = batch["label"].to(self.device, non_blocking=True)
+                if self.model_type == "decoder_only":
+                    # Generative model batch format
+                    input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                    target_ids = batch["target_ids"].to(self.device, non_blocking=True)
+                    causal_mask = batch["causal_mask"].to(self.device, non_blocking=True)
 
-                # Forward pass
-                output = self.model(source, target, source_mask, target_mask)
+                    # Forward pass
+                    output = self.model(input_ids, mask=causal_mask)
+                    label = target_ids
+                else:
+                    # Encoder-decoder model batch format
+                    source = batch["source"].to(self.device, non_blocking=True)
+                    target = batch["target"].to(self.device, non_blocking=True)
+                    source_mask = batch["source_mask"].to(self.device, non_blocking=True)
+                    target_mask = batch["target_mask"].to(self.device, non_blocking=True)
+                    label = batch["label"].to(self.device, non_blocking=True)
+
+                    # Forward pass
+                    output = self.model(source, target, source_mask, target_mask)
 
                 # Compute loss
                 loss = self.loss_function(
@@ -786,8 +869,8 @@ class Trainer:
 
                     total_tokens += num_valid_tokens
 
-                # Generate translations for BLEU/chrF (limited for speed)
-                if len(all_predictions) < max_translations:
+                # Generate translations for BLEU/chrF (limited for speed) - encoder-decoder only
+                if self.model_type == "encoder_decoder" and len(all_predictions) < max_translations:
                     # Check if raw text is available in batch
                     has_text = "source_text" in batch and "target_text" in batch
 
@@ -908,6 +991,75 @@ class Trainer:
 
             # Compute loss
             loss = self.loss_function(output.view(-1, output.size(-1)), label.view(-1))
+
+            # Scale loss for gradient accumulation
+            scaled_loss = loss / self.accumulation_steps
+            scaled_loss.backward()
+
+        # Update parameters if accumulation step is reached
+        if (step + 1) % self.accumulation_steps == 0:
+            # Clip gradients
+            grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(),
+                self.training_config.optimizer_config.max_grad_norm,
+            )
+            grad_norm_value = grad_norm_tensor.item()
+
+            # Update parameters and reset gradients
+            self.optimizer.step()
+            if self.scheduler is None:
+                raise ValueError("Scheduler not initialized.")
+            self.scheduler.step()
+
+            self.optimizer.zero_grad()
+
+            # Log gradient norm
+            self.tb_logger.log_gradient_norm(grad_norm_value, self.training_state.step)
+
+        return loss.item(), grad_norm_value
+
+    def _training_step_decoder_only(
+        self,
+        step: int,
+        input_ids: torch.Tensor,
+        target_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        causal_mask: torch.Tensor,
+    ) -> tuple[float, Optional[float]]:
+        """Execute a single training step for decoder-only models.
+
+        Args:
+            step: Current step number
+            input_ids: Input token IDs [batch_size, seq_len]
+            target_ids: Target token IDs (labels) [batch_size, seq_len]
+            attention_mask: Attention mask for padding [batch_size, seq_len]
+            causal_mask: Causal mask for autoregressive attention [seq_len, seq_len]
+
+        Returns:
+            Tuple of (loss, grad_norm). grad_norm is None if not an accumulation step.
+        """
+        # Save time-based checkpoint if needed
+        save_time_based_checkpoint(self)
+
+        # Determine the appropriate dtype based on device capabilities
+        dtype = (
+            torch.bfloat16
+            if self.device == "cuda"
+            and torch.cuda.is_available()
+            and torch.cuda.get_device_capability(0)[0] >= 8
+            else torch.float16
+        )
+
+        grad_norm_value: Optional[float] = None
+
+        with torch.autocast(device_type=self.device, dtype=dtype):
+            # Forward pass - decoder only model outputs logits directly
+            logits = self.model(input_ids, mask=causal_mask)
+
+            # Compute loss
+            # logits: [batch_size, seq_len, vocab_size]
+            # target_ids: [batch_size, seq_len]
+            loss = self.loss_function(logits.view(-1, logits.size(-1)), target_ids.view(-1))
 
             # Scale loss for gradient accumulation
             scaled_loss = loss / self.accumulation_steps

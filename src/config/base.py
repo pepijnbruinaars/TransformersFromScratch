@@ -1,21 +1,24 @@
-from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from dataclasses import dataclass, field
+from typing import Optional, TYPE_CHECKING, Any, List
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from ..data.config import MultiCorpusConfig
+    from ..data.config import MultiCorpusConfig, PreprocessingConfig
 
 @dataclass
 class ModelConfig:
     """
     Architecture configuration class for the model.
+    Supports both encoder_decoder and decoder_only architectures.
     """
+    architecture: str  # "encoder_decoder" or "decoder_only"
     n_block: int
     n_head: int
     d_model: int
     d_ff: int
     dropout_rate: float
     use_flash_attention: bool = True
+    sequence_length: Optional[int] = None  # Required for decoder_only, optional for encoder_decoder
 
 @dataclass
 class OptimizerConfig:
@@ -28,6 +31,7 @@ class OptimizerConfig:
     epsilon: float
     accumulation_steps: int = 1
     max_grad_norm: float = 1.0
+    gradient_clipping: float = 1.0  # Gradient norm clipping threshold
 
 @dataclass
 class SchedulerConfig:
@@ -55,6 +59,7 @@ class TrainingConfig:
     tensorboard_flush_frequency: int = 100
     logging_verbosity: int = 1
     logging_config: Optional["LoggingConfig"] = None
+    use_mixed_precision: bool = False  # Use fp16/bf16 for training
 
 @dataclass
 class CheckpointConfig:
@@ -111,6 +116,26 @@ class DataConfig:
     batch_size: int
     tokenizer_path: str = "models/tokenizers/europarl_tokenizer.json"
 
+
+@dataclass
+class GenerationConfig:
+    """
+    Configuration for generation sampling during training.
+    """
+    enabled: bool = False
+    sample_every_n_steps: int = 100
+    num_samples: int = 1
+    temperatures: Optional[List[float]] = None
+    max_new_tokens: int = 50
+    prompts: Optional[List[str]] = None
+
+    def __post_init__(self):
+        if self.temperatures is None:
+            object.__setattr__(self, 'temperatures', [0.8, 1.0])
+        if self.prompts is None:
+            object.__setattr__(self, 'prompts', ["Once upon a time"])
+
+
 @dataclass
 class ExperimentConfig:
     """
@@ -123,3 +148,6 @@ class ExperimentConfig:
     data_config: DataConfig
     runpod_config: Optional[RunPodConfig] = None
     multi_corpus_config: Optional["MultiCorpusConfig"] = None
+    generative_config: Optional[Any] = None  # For decoder-only tasks
+    generative_preprocessing_config: Optional["PreprocessingConfig"] = None  # For decoder-only preprocessing
+    generation_config: Optional[GenerationConfig] = None  # For generation sampling

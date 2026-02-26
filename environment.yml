@@ -1,0 +1,46 @@
+name: transformers-from-scratch
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  # Python
+  - python=3.11
+
+  # PyTorch with CUDA
+  - pytorch::pytorch::*=*cuda*
+  - pytorch::pytorch-cuda=12.4
+  - pytorch::torchvision
+  - pytorch::torchaudio
+
+  # Transformers & NLP
+  - transformers
+  - datasets
+  - tokenizers
+  - huggingface_hub
+  - sacrebleu
+  - nltk
+  - sentencepiece
+
+  # Data Science & Visualization
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - scikit-learn
+
+  # Utilities
+  - pyyaml
+  - tqdm
+  - click
+  - rich
+  - tabulate
+  - joblib
+
+  # Development
+  - jupyter
+  - ipython
+  - ipykernel
+
+  # TensorBoard
+  - tensorboard

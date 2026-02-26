@@ -10,6 +10,7 @@ from .base import (
     CheckpointConfig,
     RunPodConfig,
     DataConfig,
+    GenerationConfig,
 )
 from .environment import resolve_env_vars
 from ..data.config import (
@@ -22,6 +23,8 @@ from ..data.config import (
     PreprocessingConfig,
     SequenceConfig,
     TranslationConfig,
+    TranslationConfig,
+    GenerativeConfig,
     DataLoaderConfig,
 )
 
@@ -86,11 +89,14 @@ class ConfigLoader:
         # Extract and build ModelConfig
         model_data = data.get("model", {})
         model_config = ModelConfig(
+            architecture=model_data.get("architecture", "encoder_decoder"),
             n_block=model_data.get("n_blocks"),
             n_head=model_data.get("n_heads"),
             d_model=model_data.get("d_model"),
             d_ff=model_data.get("d_ff"),
             dropout_rate=model_data.get("dropout_rate"),
+            use_flash_attention=model_data.get("use_flash_attention", True),
+            sequence_length=model_data.get("sequence_length", None),
         )
 
         # Extract and build SchedulerConfig
@@ -109,10 +115,11 @@ class ConfigLoader:
         optimizer_data = data.get("training", {}).get("optimizer", {})
         optimizer_config = OptimizerConfig(
             name=optimizer_data.get("name", "adam"),
-            weight_decay=optimizer_data.get("weight_decay", 1e-5),
+            weight_decay=float(optimizer_data.get("weight_decay", 1e-5)),
             betas=tuple(optimizer_data.get("betas", [0.9, 0.999])),
-            epsilon=optimizer_data.get("epsilon", 1e-8),
+            epsilon=float(optimizer_data.get("epsilon", 1e-8)),
             accumulation_steps=optimizer_data.get("accumulation_steps", 1),
+            gradient_clipping=float(optimizer_data.get("gradient_clipping", 1.0)),
         )
 
         # Extract and build TrainingConfig
@@ -122,6 +129,7 @@ class ConfigLoader:
             scheduler_config=scheduler_config,
             optimizer_config=optimizer_config,
             logging_verbosity=training_data.get("logging_verbosity", 1),
+            use_mixed_precision=training_data.get("use_mixed_precision", False),
         )
 
         # Extract and build CheckpointConfig
@@ -163,6 +171,46 @@ class ConfigLoader:
                 data["multi_corpus"]
             )
 
+        # Extract and build GenerativeConfig (optional, for decoder-only models)
+        generative_config = None
+        generative_preprocessing_config = None
+        if "generative" in data:
+            gen_data = data["generative"]
+
+            # Parse generative config
+            generative_config = ConfigLoader._parse_generative_config(gen_data)
+
+            # Parse preprocessing config for generative task
+            if "preprocessing" in gen_data:
+                preproc_data = gen_data["preprocessing"]
+                sequence_config = SequenceConfig(
+                    max_length=preproc_data.get("sequence", {}).get("max_length", 256),
+                    truncation=preproc_data.get("sequence", {}).get("truncation", True),
+                    padding=preproc_data.get("sequence", {}).get("padding", "max_length"),
+                )
+                generative_preprocessing_config = PreprocessingConfig(
+                    sequence_config=sequence_config,
+                    generative_config=generative_config,
+                    add_special_tokens=preproc_data.get("add_special_tokens", True),
+                    return_attention_mask=preproc_data.get("return_attention_mask", True),
+                    return_causal_mask=preproc_data.get("return_causal_mask", True),
+                    cache_dir=preproc_data.get("cache_dir"),
+                    use_preprocessing_cache=preproc_data.get("use_preprocessing_cache", True),
+                )
+
+        # Extract and build GenerationConfig (optional, for sampling during training)
+        generation_config = None
+        if "generation" in data:
+            gen_sample_data = data["generation"]
+            generation_config = GenerationConfig(
+                enabled=gen_sample_data.get("enabled", False),
+                sample_every_n_steps=gen_sample_data.get("sample_every_n_steps", 100),
+                num_samples=gen_sample_data.get("num_samples", 1),
+                temperatures=gen_sample_data.get("temperatures", [0.8, 1.0]),
+                max_new_tokens=gen_sample_data.get("max_new_tokens", 50),
+                prompts=gen_sample_data.get("prompts", ["Once upon a time"]),
+            )
+
         # Build and return ExperimentConfig
         experiment_name = data.get("experiment_name", "default_experiment")
         experiment_config = ExperimentConfig(
@@ -173,6 +221,9 @@ class ConfigLoader:
             data_config=data_config,
             runpod_config=runpod_config,
             multi_corpus_config=multi_corpus_config,
+            generative_config=generative_config,
+            generative_preprocessing_config=generative_preprocessing_config,
+            generation_config=generation_config,
         )
 
         return experiment_config
@@ -371,4 +422,69 @@ class ConfigLoader:
             normalization_config=normalization_config,
             sampling_strategy=data.get("sampling_strategy", "interleaved"),
             random_seed=data.get("random_seed", 42),
+        )
+
+    @staticmethod
+    def _parse_generative_config(data: Dict[str, Any]):
+        """Parse generative dataset configuration from YAML dictionary.
+
+        Args:
+            data: Dictionary from YAML generative section
+
+        Returns:
+            Parsed generative configuration with dataset specs and dataloaders
+        """
+        # Parse dataset config
+        dataset_data = data.get("dataset", {})
+        dataset_config = DataProviderConfig(
+            name=dataset_data.get("provider_name", "huggingface"),
+            dataset_name=dataset_data.get("dataset_name"),
+            dataset_config=dataset_data.get("dataset_config"),
+            split=dataset_data.get("split", "train"),
+        )
+
+        # Parse split config
+        split_data = data.get("split", {})
+        split_config = DatasetSplitConfig(
+            train=float(split_data.get("train", 0.9)),
+            val=float(split_data.get("val", 0.05)),
+            test=float(split_data.get("test", 0.05)),
+            max_train_size=split_data.get("max_train_size"),
+        )
+
+        # Parse dataloader configs
+        train_loader_data = data.get("train_loader", {})
+        train_loader_config = DataLoaderConfig(
+            batch_size=train_loader_data.get("batch_size", 32),
+            shuffle=train_loader_data.get("shuffle", True),
+            num_workers=train_loader_data.get("num_workers", 0),
+            pin_memory=train_loader_data.get("pin_memory", True),
+            drop_last=train_loader_data.get("drop_last", False),
+            persistent_workers=train_loader_data.get("persistent_workers", False),
+            prefetch_factor=train_loader_data.get("prefetch_factor", None),
+        )
+
+        val_loader_data = data.get("val_loader", {})
+        val_loader_config = DataLoaderConfig(
+            batch_size=val_loader_data.get("batch_size", 32),
+            shuffle=val_loader_data.get("shuffle", False),
+            num_workers=val_loader_data.get("num_workers", 0),
+            pin_memory=val_loader_data.get("pin_memory", True),
+            drop_last=val_loader_data.get("drop_last", False),
+            persistent_workers=val_loader_data.get("persistent_workers", False),
+            prefetch_factor=val_loader_data.get("prefetch_factor", None),
+        )
+
+        # Create a simple object to hold all config
+        class GenerativeConfigContainer:
+            def __init__(self, **kwargs):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
+
+        return GenerativeConfigContainer(
+            text_field=data.get("text_field", "text"),
+            dataset=dataset_config,
+            split=split_config,
+            train_loader=train_loader_config,
+            val_loader=val_loader_config,
         )

@@ -2,7 +2,7 @@
 torch==2.5.1
 torchaudio==2.5.1
 torchvision==0.20.1
-tensorboard==2.20.0
+tensorboard==2.15.1
 
 # Translation & NLP
 sacrebleu
@@ -14,7 +14,7 @@ transformers
 sentencepiece
 
 # Data Science & Math
-numpy==2.0.1
+numpy==1.26.4
 pandas==2.3.3
 scipy
 sympy
