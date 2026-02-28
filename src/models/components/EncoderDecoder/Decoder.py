@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from ..FeedForward import FeedForward
+from ..FeedForward import FeedForward, build_feedforward
 from ..MultiHeadAttention import MultiHeadAttention
 from ..ResidualConnection import ResidualConnection
 from ..LayerNormalization import LayerNormalization
@@ -16,18 +16,19 @@ class DecoderBlock(nn.Module):
 
     def __init__(
         self,
+        d_model: int,
         self_attention: MultiHeadAttention,
         cross_attention: MultiHeadAttention,
-        feed_forward: FeedForward,
+        feed_forward: nn.Module,
         dropout: float,
     ):
         super(DecoderBlock, self).__init__()
         self.self_attention = self_attention
         self.cross_attention = cross_attention
         self.feed_forward = feed_forward
-        self.residual_connection_1 = ResidualConnection(dropout)
-        self.residual_connection_2 = ResidualConnection(dropout)
-        self.residual_connection_3 = ResidualConnection(dropout)
+        self.residual_connection_1 = ResidualConnection(d_model, dropout)
+        self.residual_connection_2 = ResidualConnection(d_model, dropout)
+        self.residual_connection_3 = ResidualConnection(d_model, dropout)
 
     def forward(
         self,
@@ -82,6 +83,7 @@ class Decoder(nn.Module):
         self.layers = nn.ModuleList(
             [
                 DecoderBlock(
+                    d_model=d_model,
                     self_attention=MultiHeadAttention(d_model, n_heads, dropout, use_flash_attention),
                     cross_attention=MultiHeadAttention(d_model, n_heads, dropout, use_flash_attention),
                     feed_forward=FeedForward(d_model, d_ff, dropout),
@@ -90,7 +92,7 @@ class Decoder(nn.Module):
                 for _ in range(n_blocks)
             ]
         )
-        self.normalization_layer = LayerNormalization()
+        self.normalization_layer = LayerNormalization(d_model)
 
     def forward(
         self,

@@ -1,19 +1,20 @@
 import torch.nn as nn
 
-from ...components.FeedForward import FeedForward
+from ...components.FeedForward import build_feedforward
 from ...components.LayerNormalization import LayerNormalization
 from ...components.MultiHeadAttention import MultiHeadAttention
 
 from .DecoderBlock import DecoderBlock
 
 class DecoderOnlyStack(nn.Module):
-    def __init__(self, n_blocks, d_model, d_ff, n_heads, dropout, use_flash_attention):
+    def __init__(self, n_blocks, d_model, d_ff, n_heads, dropout, use_flash_attention, activation="gelu"):
         super().__init__()
         self.blocks = nn.ModuleList(
             [
                 DecoderBlock(
+                    d_model=d_model,
                     self_attention=MultiHeadAttention(d_model, n_heads, dropout, use_flash_attention),
-                    feed_forward=FeedForward(d_model, d_ff, dropout),
+                    feed_forward=build_feedforward(d_model, d_ff, dropout, activation),
                     dropout=dropout)
                 for _ in range(n_blocks)
             ]

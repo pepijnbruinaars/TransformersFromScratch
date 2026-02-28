@@ -91,6 +91,11 @@ class Trainer:
         self.checkpoint_config = checkpoint_config
         self.runpod_config = runpod_config
         self.generation_config = generation_config
+        self._qualitative_sample_every_n_steps = (
+            max(1, int(generation_config.sample_every_n_steps))
+            if model_type == "decoder_only" and generation_config and generation_config.enabled
+            else 2000
+        )
         self.accumulation_steps = training_config.optimizer_config.accumulation_steps
 
         self.train_dataloader = train_dataloader
@@ -107,6 +112,14 @@ class Trainer:
             training_config.scheduler_config.learning_rate,
         )
         self.scheduler: Optional[LRScheduler] = None
+
+        # Initialize GradScaler for mixed precision (fp16 only, not needed for bfloat16)
+        self.use_mixed_precision = training_config.use_mixed_precision
+        self.grad_scaler = None
+        if self.use_mixed_precision and self.device == "cuda":
+            # Only use GradScaler for fp16 (compute capability < 8)
+            if torch.cuda.get_device_capability(0)[0] < 8:
+                self.grad_scaler = torch.cuda.amp.GradScaler()
 
         # Initialize signal handler for graceful shutdown (RunPod spot instance support)
         self.killer = GracefulKiller.get_instance()
@@ -139,7 +152,8 @@ class Trainer:
 
     def _initialize_scheduler(self, num_epochs: int) -> None:
         """Initialize the learning rate scheduler."""
-        total_steps = len(self.train_dataloader) * num_epochs
+        updates_per_epoch = math.ceil(len(self.train_dataloader) / self.accumulation_steps)
+        total_steps = updates_per_epoch * num_epochs
         self.scheduler = SchedulerFactory.create(
             scheduler_name=self.training_config.scheduler_config.name,
             optimizer=self.optimizer,
@@ -152,6 +166,8 @@ class Trainer:
             decay_rate=self.training_config.scheduler_config.decay_rate,
         )
         logger.info(f"Using scheduler: {self.training_config.scheduler_config.name}")
+        logger.info(f"Optimizer updates per epoch: {updates_per_epoch}")
+        logger.info(f"Total optimizer updates: {total_steps}")
         logger.info(
             f"Warmup steps: {int(total_steps * self.training_config.scheduler_config.warmup_ratio)}"
         )
@@ -242,6 +258,58 @@ class Trainer:
             Tensor with token count (call .item() to get scalar).
         """
         return (source_mask != 0).sum() + (target_mask != 0).sum()
+
+    def _estimate_batch_tokens_for_stats(self, batch: dict) -> int:
+        """Estimate real (non-padding) tokens in a batch for startup statistics.
+
+        Supports both encoder-decoder and decoder-only batch formats.
+
+        Args:
+            batch: Batch dictionary from the dataloader.
+
+        Returns:
+            Estimated number of non-padding tokens in the batch.
+        """
+        pad_id = self.tokenizer.token_to_id(PAD_TOKEN)
+
+        if self.model_type == "decoder_only":
+            attention_mask = batch.get("attention_mask", None)
+            if attention_mask is not None:
+                return int(attention_mask.sum().item())
+
+            target_ids = batch.get("target_ids", None)
+            if target_ids is not None:
+                return int((target_ids != pad_id).sum().item())
+
+            lengths = batch.get("lengths", None)
+            if lengths is not None:
+                return int(lengths.sum().item())
+
+            input_ids = batch.get("input_ids", None)
+            if input_ids is not None:
+                return int((input_ids != pad_id).sum().item())
+
+            return 0
+
+        source_mask = batch.get("source_mask", None)
+        target_mask = batch.get("target_mask", None)
+        if source_mask is not None and target_mask is not None:
+            return int(source_mask.sum().item() + target_mask.sum().item())
+        if source_mask is not None:
+            return int(source_mask.sum().item())
+
+        label = batch.get("label", None)
+        if label is not None:
+            return int((label != pad_id).sum().item())
+
+        source = batch.get("source", None)
+        target = batch.get("target", None)
+        if source is not None and target is not None:
+            source_tokens = (source != pad_id).sum().item()
+            target_tokens = (target != pad_id).sum().item()
+            return int(source_tokens + target_tokens)
+
+        return 0
 
     def _create_source_mask(self, source: torch.Tensor) -> torch.Tensor:
         """Create attention mask for source sequence.
@@ -562,6 +630,60 @@ class Trainer:
         except Exception as e:
             logger.warning(f"Failed to generate samples: {e}")
 
+        # Log attention visualizations for first few prompts
+        try:
+            self._log_decoder_only_attention(step)
+        except Exception as e:
+            logger.warning(f"Failed to log attention maps: {e}")
+
+    def _log_decoder_only_attention(self, step: int) -> None:
+        """Extract and log attention maps for decoder-only models.
+
+        Uses the first few generation prompts to visualize self-attention patterns.
+
+        Args:
+            step: Current training step.
+        """
+        if not self.generation_config or not self.generation_config.prompts:
+            return
+
+        self.model.eval()
+        prompts = self.generation_config.prompts[:3]  # Limit to 3 prompts
+
+        with torch.no_grad():
+            for i, prompt in enumerate(prompts):
+                # Tokenize prompt
+                token_ids = self.tokenizer.encode(prompt)
+                input_ids = torch.tensor([token_ids], dtype=torch.long, device=self.device)
+
+                # Create causal mask
+                seq_len = input_ids.shape[1]
+                causal_mask = torch.tril(
+                    torch.ones(seq_len, seq_len, dtype=torch.bool, device=self.device)
+                )
+                # Expand for batch and head broadcasting: [1, 1, seq_len, seq_len]
+                mask = causal_mask[None, None, :, :]
+
+                # Forward pass with attention extraction
+                output = self.model(input_ids, mask=mask, return_attentions=True)
+                if isinstance(output, tuple):
+                    _, attentions = output
+                else:
+                    continue
+
+                # Get token strings for labels
+                token_strings = [self.tokenizer.decode([tid]) for tid in token_ids]
+
+                # Log attention maps
+                self.tb_logger.log_decoder_only_attention_maps(
+                    attentions=attentions,
+                    tokens=token_strings,
+                    step=step,
+                    prompt_idx=i,
+                )
+
+        self.model.train()
+
     def train(self, num_epochs: int, start_epoch: int = 0) -> None:
         """Train the model for the specified number of epochs.
 
@@ -577,18 +699,7 @@ class Trainer:
         for i, batch in enumerate(self.train_dataloader):
             if i >= sample_size:
                 break
-            source_mask = batch.get("source_mask", None)
-            if source_mask is not None:
-                sampled_tokens += (
-                    source_mask.sum().item()
-                    if source_mask.dim() > 2
-                    else source_mask.sum().item()
-                )
-            else:
-                label = batch.get("label", None)
-                if label is not None:
-                    pad_id = self.tokenizer.token_to_id(PAD_TOKEN)
-                    sampled_tokens += (label != pad_id).sum().item()
+            sampled_tokens += self._estimate_batch_tokens_for_stats(batch)
 
         avg_tokens_per_batch = sampled_tokens / sample_size if sample_size > 0 else 0
         estimated_total_tokens = int(avg_tokens_per_batch * total_batches)
@@ -772,11 +883,28 @@ class Trainer:
 
             self.training_state.step += 1
 
-            # === QUALITATIVE EVALUATION (EVERY 2000 OPTIMIZER STEPS) ===
-            if self.training_state.step > 0 and self.training_state.step % 2000 == 0:
+            # === VALIDATION (EVERY N STEPS) ===
+            if (
+                self.training_state.step > 0
+                and self.training_state.step % self.training_config.validate_every_n_steps == 0
+            ):
+                self._validate_step(self.training_state.step)
+
+            # === QUALITATIVE EVALUATION (CONFIGURABLE INTERVAL) ===
+            if (
+                self.training_state.step > 0
+                and self.training_state.step % self._qualitative_sample_every_n_steps == 0
+            ):
                 logger.info(f"Running qualitative evaluation at step {self.training_state.step}")
                 self._log_qualitative_samples(self.training_state.step)
                 self.tb_logger.flush()  # Ensure samples are written immediately
+
+            # Ensure model is back in training mode after evaluation
+            if self.training_state.step > 0 and (
+                self.training_state.step % self.training_config.validate_every_n_steps == 0
+                or self.training_state.step % self._qualitative_sample_every_n_steps == 0
+            ):
+                self.model.train()
 
             # Save last_state periodically for spot instance resilience
             if self.training_state.step % self._checkpoint_every_n_steps == 0:
@@ -786,6 +914,74 @@ class Trainer:
                 self.tb_logger.flush()
 
         return False  # Continue training
+
+    def _validate_step(self, step: int) -> None:
+        """Run cheap validation on a subset of validation data.
+
+        Validates on 1000-2000 shuffled sequences with torch.inference_mode()
+        for better memory efficiency and to prevent accidental gradient accumulation.
+
+        Args:
+            step: Current training step for logging
+        """
+        self.model.eval()
+
+        # Limit validation to 1000-2000 sequences (approximately 30-60 batches at batch_size=32)
+        max_val_batches = min(60, len(self.val_dataloader))
+
+        total_loss = 0.0
+        num_batches = 0
+
+        # Use no_grad for memory efficiency and no gradient tracking
+        # (inference_mode can be too strict for some downstream operations like generation)
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(self.val_dataloader):
+                if batch_idx >= max_val_batches:
+                    break
+
+                if self.model_type == "decoder_only":
+                    # Generative model batch format
+                    input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+                    target_ids = batch["target_ids"].to(self.device, non_blocking=True)
+                    attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
+                    causal_mask = batch["causal_mask"].to(self.device, non_blocking=True)
+
+                    # Forward pass
+                    combined_mask = (
+                        causal_mask[None, None, :, :]
+                        & attention_mask[:, None, None, :].bool()
+                    )
+                    output = self.model(input_ids, mask=combined_mask)
+                    label = target_ids
+                else:
+                    # Encoder-decoder model batch format
+                    source = batch["source"].to(self.device, non_blocking=True)
+                    target = batch["target"].to(self.device, non_blocking=True)
+                    source_mask = batch["source_mask"].to(self.device, non_blocking=True)
+                    target_mask = batch["target_mask"].to(self.device, non_blocking=True)
+                    label = batch["label"].to(self.device, non_blocking=True)
+
+                    # Forward pass
+                    output = self.model(source, target, source_mask, target_mask)
+
+                # Compute loss
+                loss = self.loss_function(
+                    output.view(-1, output.size(-1)), label.view(-1)
+                )
+                total_loss += loss.item()
+                num_batches += 1
+
+        # Log validation metrics
+        if num_batches > 0:
+            avg_val_loss = total_loss / num_batches
+            self.tb_logger.log_validation_step(avg_val_loss, step)
+            perplexity = math.exp(avg_val_loss)
+            self.tb_logger.log_perplexity(avg_val_loss, step, prefix="Validation")
+            logger.info(f"Step {step} - Validation loss: {avg_val_loss:.4f}, Perplexity: {perplexity:.4f}")
+
+            # Update best validation loss
+            if avg_val_loss < self.training_state.best_val_loss:
+                self.training_state.best_val_loss = avg_val_loss
 
     def _validate_epoch(self) -> None:
         """Validate the model for one epoch.
@@ -817,14 +1013,21 @@ class Trainer:
 
         with torch.no_grad():
             for batch in tqdm(self.val_dataloader, desc="Validation"):
+                source = None
+
                 if self.model_type == "decoder_only":
                     # Generative model batch format
                     input_ids = batch["input_ids"].to(self.device, non_blocking=True)
                     target_ids = batch["target_ids"].to(self.device, non_blocking=True)
+                    attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
                     causal_mask = batch["causal_mask"].to(self.device, non_blocking=True)
 
                     # Forward pass
-                    output = self.model(input_ids, mask=causal_mask)
+                    combined_mask = (
+                        causal_mask[None, None, :, :]
+                        & attention_mask[:, None, None, :].bool()
+                    )
+                    output = self.model(input_ids, mask=combined_mask)
                     label = target_ids
                 else:
                     # Encoder-decoder model batch format
@@ -871,6 +1074,9 @@ class Trainer:
 
                 # Generate translations for BLEU/chrF (limited for speed) - encoder-decoder only
                 if self.model_type == "encoder_decoder" and len(all_predictions) < max_translations:
+                    if source is None:
+                        continue
+
                     # Check if raw text is available in batch
                     has_text = "source_text" in batch and "target_text" in batch
 
@@ -994,10 +1200,18 @@ class Trainer:
 
             # Scale loss for gradient accumulation
             scaled_loss = loss / self.accumulation_steps
+
+        # Backward pass (outside autocast)
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(scaled_loss).backward()
+        else:
             scaled_loss.backward()
 
         # Update parameters if accumulation step is reached
         if (step + 1) % self.accumulation_steps == 0:
+            if self.grad_scaler is not None:
+                self.grad_scaler.unscale_(self.optimizer)
+
             # Clip gradients
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
@@ -1006,7 +1220,12 @@ class Trainer:
             grad_norm_value = grad_norm_tensor.item()
 
             # Update parameters and reset gradients
-            self.optimizer.step()
+            if self.grad_scaler is not None:
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+            else:
+                self.optimizer.step()
+
             if self.scheduler is None:
                 raise ValueError("Scheduler not initialized.")
             self.scheduler.step()
@@ -1053,8 +1272,16 @@ class Trainer:
         grad_norm_value: Optional[float] = None
 
         with torch.autocast(device_type=self.device, dtype=dtype):
+            # Combine causal mask with padding mask
+            # causal_mask: [seq_len, seq_len] (True = can attend, False = can't)
+            # attention_mask: [batch_size, seq_len] (1 = real token, 0 = padding)
+            # Combined: [batch_size, 1, seq_len, seq_len] (True = can attend, False = can't)
+            # The 1 dimension will broadcast to num_heads during multi-head attention
+            batch_size, seq_len = input_ids.shape
+            combined_mask = (causal_mask[None, None, :, :] & attention_mask[:, None, None, :].bool())
+
             # Forward pass - decoder only model outputs logits directly
-            logits = self.model(input_ids, mask=causal_mask)
+            logits = self.model(input_ids, mask=combined_mask)
 
             # Compute loss
             # logits: [batch_size, seq_len, vocab_size]
@@ -1063,10 +1290,18 @@ class Trainer:
 
             # Scale loss for gradient accumulation
             scaled_loss = loss / self.accumulation_steps
+
+        # Backward pass (outside autocast)
+        if self.grad_scaler is not None:
+            self.grad_scaler.scale(scaled_loss).backward()
+        else:
             scaled_loss.backward()
 
         # Update parameters if accumulation step is reached
         if (step + 1) % self.accumulation_steps == 0:
+            if self.grad_scaler is not None:
+                self.grad_scaler.unscale_(self.optimizer)
+
             # Clip gradients
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(),
@@ -1075,7 +1310,12 @@ class Trainer:
             grad_norm_value = grad_norm_tensor.item()
 
             # Update parameters and reset gradients
-            self.optimizer.step()
+            if self.grad_scaler is not None:
+                self.grad_scaler.step(self.optimizer)
+                self.grad_scaler.update()
+            else:
+                self.optimizer.step()
+
             if self.scheduler is None:
                 raise ValueError("Scheduler not initialized.")
             self.scheduler.step()

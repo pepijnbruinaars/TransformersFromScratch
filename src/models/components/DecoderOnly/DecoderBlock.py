@@ -6,9 +6,10 @@ from ...components.ResidualConnection import ResidualConnection
 
 class DecoderBlock(nn.Module):
     """A single decoder block consisting of self-attention and feedforward layers, with residual connections."""
-    
+
     def __init__(
         self,
+        d_model: int,
         self_attention: nn.Module,
         feed_forward: nn.Module,
         dropout: float,
@@ -16,9 +17,9 @@ class DecoderBlock(nn.Module):
         super(DecoderBlock, self).__init__()
         self.self_attention = self_attention
         self.feed_forward = feed_forward
-        self.residual_connection_1 = ResidualConnection(dropout)
-        self.residual_connection_2 = ResidualConnection(dropout)
-        
+        self.residual_connection_1 = ResidualConnection(d_model, dropout)
+        self.residual_connection_2 = ResidualConnection(d_model, dropout)
+
     def forward(
         self,
         x: torch.Tensor,

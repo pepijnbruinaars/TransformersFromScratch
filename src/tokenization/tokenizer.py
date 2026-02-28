@@ -12,12 +12,14 @@ class CustomTokenizer:
         self,
         path: Optional[str] = None,
         special_tokens: Optional[list[str]] = None,
+        vocab_size: int = 16000,
     ) -> None:
         """Initializes the CustomTokenizer.
 
         Args:
             path (Optional[str], optional): Path to the tokenizer file. If None, a new tokenizer will be created. Defaults to None.
             special_tokens (Optional[list[str]], optional): List of special tokens to use in the tokenizer. Defaults to [START_TOKEN, END_TOKEN, PAD_TOKEN, UNKNOWN_TOKEN].
+            vocab_size (int, optional): Maximum vocabulary size for BPE training. Defaults to 16000.
         """
         self._trained = False
         # Try to load the tokenizer from the specified path
@@ -40,6 +42,7 @@ class CustomTokenizer:
         self.tokenizer.pre_tokenizer = pre_tokenizers.Whitespace()  # type: ignore
         self.trainer = trainers.BpeTrainer(
             special_tokens=special_tokens,  # type: ignore
+            vocab_size=vocab_size,
             min_frequency=2,  # type: ignore
         )
 

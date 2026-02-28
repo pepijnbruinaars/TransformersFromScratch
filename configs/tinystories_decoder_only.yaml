@@ -13,7 +13,8 @@ model:
   d_model: 384          # Embedding dimension (~30-40M total params)
   n_heads: 8            # 8 attention heads (48 dim per head)
   d_ff: 1536            # Feed-forward intermediate (4x d_model)
-  dropout_rate: 0.1     # Reasonable regularization
+  dropout_rate: 0.05    # Reasonable regularization
+  activation: "relu"  # "relu", "gelu", "swish", or "swiglu"
   use_flash_attention: true
   sequence_length: 256  # Recommended for compute-limited training
 
@@ -36,10 +37,12 @@ training:
   gradient_accumulation_steps: 4  # Effective batch = 32 * 4 = 128 sequences
   gradient_clipping: 1.0           # Clip global norm at 1.0 (critical for stability)
   use_mixed_precision: true        # fp16/bf16 - nearly 2x throughput
+  validate_every_n_steps: 1000     # Run cheap validation every 1000 steps
 
 data:
   batch_size: 32        # Per-GPU batch size
   tokenizer_path: "models/tokenizers/tinystories_tokenizer.json"
+  vocab_size: 16000     # BPE vocabulary size
 
 # ==============================================================================
 # GENERATIVE DATASET CONFIGURATION
@@ -107,9 +110,9 @@ checkpoint:
 # ==============================================================================
 generation:
   enabled: true
-  sample_every_n_steps: 200      # Sample every 200 training steps
+  sample_every_n_steps: 1000      # Sample every 1000 training steps
   num_samples: 1                 # Generate 1 sample per prompt/temperature
-  temperatures: [0.8, 1.0]       # Conservative temperatures for better quality
+  temperatures: [0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4]       # Conservative temperatures for better quality
   max_new_tokens: 64
   prompts:
     - "Once upon a time"

@@ -7,10 +7,10 @@ from .LayerNormalization import LayerNormalization
 class ResidualConnection(nn.Module):
     """"""
 
-    def __init__(self, dropout: float) -> None:
+    def __init__(self, d_model: int, dropout: float) -> None:
         super(ResidualConnection, self).__init__()
         self.dropout = nn.Dropout(dropout)
-        self.normalization = LayerNormalization()
+        self.normalization = LayerNormalization(d_model)
 
     def forward(self, x: torch.Tensor, sublayer: nn.Module):
         # Call sublayer with normalized input. The sublayer may return either

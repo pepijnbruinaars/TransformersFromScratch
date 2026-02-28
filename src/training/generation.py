@@ -88,23 +88,33 @@ class GenerationSampler:
 
         # Generate tokens one by one
         for _ in range(self.max_new_tokens):
+            # Create causal mask for current sequence length
+            seq_len = input_ids.shape[1]
+            causal_mask = torch.tril(
+                torch.ones(seq_len, seq_len, dtype=torch.bool, device=self.device)
+            )
+
             # Forward pass
-            logits = self.model(input_ids)
+            logits = self.model(input_ids, mask=causal_mask)
             next_token_logits = logits[0, -1, :]  # [vocab_size]
 
-            # Apply temperature
-            if temperature != 1.0:
-                next_token_logits = next_token_logits / temperature
+            # Temperature == 0 means greedy decoding (argmax)
+            if temperature == 0:
+                next_token_id = next_token_logits.argmax(dim=-1, keepdim=True)
+            else:
+                # Apply temperature
+                if temperature != 1.0:
+                    next_token_logits = next_token_logits / temperature
 
-            # Apply top-k/nucleus sampling
-            if self.top_k is not None:
-                next_token_logits = self._top_k_filter(next_token_logits, self.top_k)
+                # Apply top-k/nucleus sampling
+                if self.top_k is not None:
+                    next_token_logits = self._top_k_filter(next_token_logits, self.top_k)
 
-            next_token_logits = self._nucleus_filter(next_token_logits, self.top_p)
+                next_token_logits = self._nucleus_filter(next_token_logits, self.top_p)
 
-            # Sample from distribution
-            probs = F.softmax(next_token_logits, dim=-1)
-            next_token_id = torch.multinomial(probs, num_samples=1)
+                # Sample from distribution
+                probs = F.softmax(next_token_logits, dim=-1)
+                next_token_id = torch.multinomial(probs, num_samples=1)
 
             # Append to input
             input_ids = torch.cat([input_ids, next_token_id.unsqueeze(0)], dim=1)

@@ -252,6 +252,60 @@ class TrainingLogger:
                 )
                 plt.close(fig)
 
+    def log_decoder_only_attention_maps(
+        self,
+        attentions: list,
+        tokens: list[str],
+        step: int,
+        prompt_idx: int = 0,
+    ) -> None:
+        """Log decoder-only self-attention maps to TensorBoard.
+
+        Args:
+            attentions: List of attention tensors per layer.
+                Each tensor shape: (batch, n_heads, seq_len, seq_len)
+            tokens: Token strings for axis labels.
+            step: Current training step.
+            prompt_idx: Index of the prompt (for naming).
+        """
+        if not attentions:
+            return
+
+        # Log final layer attention (averaged across heads)
+        final_attn = attentions[-1]
+        if final_attn is not None and final_attn.numel() > 0:
+            avg_attn = final_attn[0].mean(dim=0)  # (seq_len, seq_len)
+            fig = self._create_attention_figure(
+                avg_attn.detach().cpu(),
+                tokens,
+                tokens,
+                f"Self-Attention Final Layer (Prompt {prompt_idx})",
+            )
+            self.writer.add_figure(
+                f"Attention/Decoder_Self_Avg/Prompt_{prompt_idx}",
+                fig,
+                step,
+            )
+            plt.close(fig)
+
+        # Log per-head attention for final layer (first 4 heads)
+        if final_attn is not None and final_attn.numel() > 0:
+            n_heads = min(4, final_attn.shape[1])
+            for h in range(n_heads):
+                head_attn = final_attn[0, h]  # (seq_len, seq_len)
+                fig = self._create_attention_figure(
+                    head_attn.detach().cpu(),
+                    tokens,
+                    tokens,
+                    f"Self-Attention Head {h} (Prompt {prompt_idx})",
+                )
+                self.writer.add_figure(
+                    f"Attention/Decoder_Head_{h}/Prompt_{prompt_idx}",
+                    fig,
+                    step,
+                )
+                plt.close(fig)
+
     def _create_attention_figure(
         self,
         attention: torch.Tensor,

@@ -56,6 +56,7 @@ class Transformer(nn.Module):
         source_vocabulary_size: int,
         target_vocabulary_size: int,
         use_flash_attention: bool = True,
+        activation: str = "gelu",
     ) -> None:
         """Create a new Transformer model.
 
@@ -89,6 +90,7 @@ class Transformer(nn.Module):
             n_heads=n_heads,
             dropout=dropout,
             use_flash_attention=use_flash_attention,
+            activation=activation,
         )
         self.decoder = Decoder(
             n_blocks=n_blocks,
@@ -97,6 +99,7 @@ class Transformer(nn.Module):
             n_heads=n_heads,
             dropout=dropout,
             use_flash_attention=use_flash_attention,
+            activation=activation,
         )
         self.projection_layer = ProjectionLayer(d_model, target_vocabulary_size)
 

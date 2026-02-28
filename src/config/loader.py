@@ -96,6 +96,7 @@ class ConfigLoader:
             d_ff=model_data.get("d_ff"),
             dropout_rate=model_data.get("dropout_rate"),
             use_flash_attention=model_data.get("use_flash_attention", True),
+            activation=model_data.get("activation", "gelu"),
             sequence_length=model_data.get("sequence_length", None),
         )
 
@@ -112,24 +113,33 @@ class ConfigLoader:
         )
 
         # Extract and build OptimizerConfig
+        training_data = data.get("training", {})
         optimizer_data = data.get("training", {}).get("optimizer", {})
+        accumulation_steps = optimizer_data.get(
+            "accumulation_steps",
+            training_data.get("gradient_accumulation_steps", 1),
+        )
+        gradient_clipping = optimizer_data.get(
+            "gradient_clipping",
+            training_data.get("gradient_clipping", 1.0),
+        )
         optimizer_config = OptimizerConfig(
             name=optimizer_data.get("name", "adam"),
             weight_decay=float(optimizer_data.get("weight_decay", 1e-5)),
             betas=tuple(optimizer_data.get("betas", [0.9, 0.999])),
             epsilon=float(optimizer_data.get("epsilon", 1e-8)),
-            accumulation_steps=optimizer_data.get("accumulation_steps", 1),
-            gradient_clipping=float(optimizer_data.get("gradient_clipping", 1.0)),
+            accumulation_steps=int(accumulation_steps),
+            gradient_clipping=float(gradient_clipping),
         )
 
         # Extract and build TrainingConfig
-        training_data = data.get("training", {})
         training_config = TrainingConfig(
             num_epochs=training_data.get("n_epochs"),
             scheduler_config=scheduler_config,
             optimizer_config=optimizer_config,
             logging_verbosity=training_data.get("logging_verbosity", 1),
             use_mixed_precision=training_data.get("use_mixed_precision", False),
+            validate_every_n_steps=training_data.get("validate_every_n_steps", 1000),
         )
 
         # Extract and build CheckpointConfig

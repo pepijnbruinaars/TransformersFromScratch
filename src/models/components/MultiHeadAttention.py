@@ -93,7 +93,7 @@ class MultiHeadAttention(nn.Module):
         # Use FlashAttention or custom implementation
         if self.use_flash_attention and not return_attentions:
             # Use PyTorch's optimized scaled_dot_product_attention
-            # Convert mask from 0/1 format (0=masked, 1=attend) to boolean format (True=attend, False=masked)
+            # Both our mask and PyTorch SDPA use: True = attend, False = don't attend
             attn_mask = None
             if mask is not None:
                 attn_mask = mask.bool()

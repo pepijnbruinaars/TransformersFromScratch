@@ -18,6 +18,7 @@ class ModelConfig:
     d_ff: int
     dropout_rate: float
     use_flash_attention: bool = True
+    activation: str = "gelu"  # "relu", "gelu", "swish", or "swiglu"
     sequence_length: Optional[int] = None  # Required for decoder_only, optional for encoder_decoder
 
 @dataclass
@@ -60,6 +61,7 @@ class TrainingConfig:
     logging_verbosity: int = 1
     logging_config: Optional["LoggingConfig"] = None
     use_mixed_precision: bool = False  # Use fp16/bf16 for training
+    validate_every_n_steps: int = 1000  # Run validation every N steps (cheap, subset-based)
 
 @dataclass
 class CheckpointConfig:
@@ -115,6 +117,7 @@ class DataConfig:
     """
     batch_size: int
     tokenizer_path: str = "models/tokenizers/europarl_tokenizer.json"
+    vocab_size: int = 16000  # Vocabulary size for BPE tokenizer
 
 
 @dataclass

@@ -104,13 +104,17 @@ def create_causal_mask(seq_length: int, device: torch.device) -> torch.Tensor:
     return mask
 
 
-def generative_collate_fn(batch: list) -> Dict[str, torch.Tensor]:
+def generative_collate_fn(
+    batch: list,
+    pad_token_id: int,
+) -> Dict[str, torch.Tensor]:
     """Custom collate function for variable-length sequences.
 
     Pads sequences to the longest in the batch and generates causal masks.
 
     Args:
         batch: List of dicts from GenerativeDataset
+        pad_token_id: Padding token ID from tokenizer
 
     Returns:
         Dict with:
@@ -122,7 +126,6 @@ def generative_collate_fn(batch: list) -> Dict[str, torch.Tensor]:
     """
     # Get the longest sequence in this batch
     max_len = max(item["length"] for item in batch)
-    pad_token_id = 0  # Assumption: pad token ID is 0
 
     padded_input_ids = []
     padded_target_ids = []

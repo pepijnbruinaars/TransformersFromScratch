@@ -15,6 +15,7 @@ training:
     learning_rate: 5e-4
     warmup_ratio: 0.05
     min_lr_ratio: 0.1
+  validate_every_n_steps: 1000
 
 logging:
   per_layer_metrics_frequency: 2000
@@ -24,6 +25,7 @@ logging:
 data:
   batch_size: 256
   tokenizer_path: "models/tokenizers/europarl_tokenizer.json"
+  vocab_size: 30000  # BPE vocabulary size
 
 checkpoint:
   save_dir: "checkpoints/"

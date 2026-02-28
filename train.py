@@ -14,6 +14,7 @@ Usage:
 """
 import argparse
 from dataclasses import replace
+from functools import partial
 import logging
 import os
 
@@ -24,6 +25,7 @@ from tqdm import tqdm
 from src.config.loader import ConfigLoader
 from src.config.environment import EnvironmentConfig
 from src.config.base import CheckpointConfig
+from src.constants import PAD_TOKEN
 from src.models.Transformer import Transformer
 from src.models.DecoderOnlyTransformer import DecoderOnlyTransformer
 from src.data import (
@@ -79,34 +81,58 @@ def _create_generative_dataloaders(
 
     logger.info("Loading generative dataset...")
 
-    # Load dataset
-    dataset = load_dataset(
-        provider_config.dataset_name,
-        provider_config.dataset_config,
-        split=None,  # Load all splits
-    )
+    # Load dataset with proper split handling
+    try:
+        # Try loading with split=None to get all splits
+        dataset = load_dataset(
+            provider_config.dataset_name,
+            provider_config.dataset_config,
+            split=None,
+        )
+        train_dataset_hf = dataset["train"]
+        val_dataset_hf = dataset.get("validation", dataset.get("test"))
+    except (ValueError, KeyError):
+        # If split=None fails, load the train split and split it ourselves
+        logger.info(f"Loading dataset without predefined splits. Creating val split from config ratios.")
+        dataset = load_dataset(
+            provider_config.dataset_name,
+            provider_config.dataset_config,
+            split=provider_config.split,
+        )
+
+        # Split the train dataset into train and val based on config
+        train_ratio = split_config.train
+        split_dataset = dataset.train_test_split(
+            test_size=(1.0 - train_ratio),
+            seed=42
+        )
+        train_dataset_hf = split_dataset["train"]
+        val_dataset_hf = split_dataset["test"]
 
     # Create datasets
     train_dataset = GenerativeDataset(
-        dataset["train"],
+        train_dataset_hf,
         tokenizer,
         preprocessing_config.sequence_config.max_length,
         preprocessing_config.generative_config.text_field,
     )
 
     val_dataset = GenerativeDataset(
-        dataset.get("validation", dataset.get("test")),
+        val_dataset_hf,
         tokenizer,
         preprocessing_config.sequence_config.max_length,
         preprocessing_config.generative_config.text_field,
     )
 
     # Create dataloaders
+    pad_token_id = tokenizer.token_to_id(PAD_TOKEN)
+    collate_fn = partial(generative_collate_fn, pad_token_id=pad_token_id)
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=train_loader_config.batch_size,
         shuffle=train_loader_config.shuffle,
-        collate_fn=generative_collate_fn,
+        collate_fn=collate_fn,
         num_workers=train_loader_config.num_workers,
         pin_memory=train_loader_config.pin_memory,
     )
@@ -115,7 +141,7 @@ def _create_generative_dataloaders(
         val_dataset,
         batch_size=val_loader_config.batch_size,
         shuffle=val_loader_config.shuffle,
-        collate_fn=generative_collate_fn,
+        collate_fn=collate_fn,
         num_workers=val_loader_config.num_workers,
         pin_memory=val_loader_config.pin_memory,
     )
@@ -197,7 +223,10 @@ def main():
 
         # Load and train tokenizer
         logger.info(f"Initializing tokenizer from: {tokenizer_path}")
-        tokenizer = CustomTokenizer(tokenizer_path)
+        tokenizer = CustomTokenizer(
+            tokenizer_path,
+            vocab_size=experiment_config.data_config.vocab_size,
+        )
 
         if not tokenizer.trained:
             logger.info("Loading dataset to train tokenizer...")
@@ -236,6 +265,7 @@ def main():
             vocab_size=tokenizer.vocabulary_size,
             sequence_length=experiment_config.model_config.sequence_length,
             use_flash_attention=experiment_config.model_config.use_flash_attention,
+            activation=experiment_config.model_config.activation,
         )
 
         trainer = Trainer(
@@ -316,7 +346,10 @@ def main():
 
         # Train or load tokenizer
         logger.info(f"Initializing tokenizer from: {tokenizer_path}")
-        tokenizer = CustomTokenizer(tokenizer_path)
+        tokenizer = CustomTokenizer(
+            tokenizer_path,
+            vocab_size=experiment_config.data_config.vocab_size,
+        )
 
         if not tokenizer.trained:
             logger.info(f"Training tokenizer on {len(train_sentences)} sentences...")
@@ -342,6 +375,7 @@ def main():
                 target_length=512,
                 source_vocabulary_size=tokenizer.vocabulary_size,
                 target_vocabulary_size=tokenizer.vocabulary_size,
+                activation=experiment_config.model_config.activation,
             ),
             train_dataloader=train_loader,
             val_dataloader=val_loader,
