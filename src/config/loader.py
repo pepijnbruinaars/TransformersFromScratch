@@ -97,6 +97,7 @@ class ConfigLoader:
             dropout_rate=model_data.get("dropout_rate"),
             use_flash_attention=model_data.get("use_flash_attention", True),
             activation=model_data.get("activation", "gelu"),
+            use_rope=model_data.get("use_rope", False),
             sequence_length=model_data.get("sequence_length", None),
         )
 

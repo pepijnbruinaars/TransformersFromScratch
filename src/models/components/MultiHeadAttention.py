@@ -5,6 +5,8 @@ import torch.nn.functional as F
 
 import math
 
+from .RotaryEmbedding import RotaryEmbedding
+
 
 def scaled_dot_product_attention(
     Q: torch.Tensor,
@@ -48,7 +50,15 @@ class MultiHeadAttention(nn.Module):
                            If False, uses custom scaled_dot_product_attention implementation.
     """
 
-    def __init__(self, d_model: int, n_heads: int, dropout: float, use_flash_attention: bool = True) -> None:
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        dropout: float,
+        use_flash_attention: bool = True,
+        use_rope: bool = False,
+        sequence_length: int = 512,
+    ) -> None:
         super(MultiHeadAttention, self).__init__()
 
         # Assert dimensions
@@ -70,6 +80,9 @@ class MultiHeadAttention(nn.Module):
         self.W_O = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
+        # Optional rotary position embeddings (applied per head on d_k vectors)
+        self.rope = RotaryEmbedding(self.d_k, sequence_length) if use_rope else None
+
     def forward(
         self,
         Q: torch.FloatTensor,
@@ -89,6 +102,10 @@ class MultiHeadAttention(nn.Module):
         query = query.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         key = key.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         value = value.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
+
+        # Apply rotary position embeddings to Q and K (replaces absolute PE)
+        if self.rope is not None:
+            query, key = self.rope(query, key)
 
         # Use FlashAttention or custom implementation
         if self.use_flash_attention and not return_attentions:

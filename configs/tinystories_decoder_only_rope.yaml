@@ -1,0 +1,113 @@
+experiment_name: "tinystories_decoder_only_rope"
+
+# ==============================================================================
+# MODEL CONFIGURATION
+# SwiGLU + RoPE variant: absolute sinusoidal PE is replaced by Rotary Position
+# Embeddings applied inside each attention head.
+# ==============================================================================
+model:
+  architecture: "decoder_only"
+  n_blocks: 8
+  d_model: 512
+  n_heads: 8            # 64 dim per head
+  d_ff: 1536
+  dropout_rate: 0.05
+  activation: "swiglu"
+  use_flash_attention: true
+  use_rope: true        # Rotary Position Embedding (replaces absolute sinusoidal PE)
+  sequence_length: 256
+
+# ==============================================================================
+# TRAINING CONFIGURATION
+# ==============================================================================
+training:
+  n_epochs: 3
+  scheduler:
+    type: "cosine"
+    learning_rate: 3e-4
+    warmup_ratio: 0.02
+    min_lr_ratio: 0.1
+  optimizer:
+    name: "adam"
+    weight_decay: 0.1
+    betas: [0.9, 0.95]
+    epsilon: 1e-8
+  gradient_accumulation_steps: 4
+  gradient_clipping: 1.0
+  use_mixed_precision: true
+  validate_every_n_steps: 1000
+
+data:
+  batch_size: 32
+  tokenizer_path: "models/tokenizers/tinystories_tokenizer.json"
+  vocab_size: 16000
+
+# ==============================================================================
+# GENERATIVE DATASET CONFIGURATION
+# ==============================================================================
+generative:
+  text_field: "text"
+
+  dataset:
+    provider_name: "huggingface"
+    dataset_name: "roneneldan/TinyStories"
+    dataset_config: null
+    split: "train"
+
+  preprocessing:
+    sequence:
+      max_length: 256
+      truncation: true
+      padding: "max_length"
+    add_special_tokens: true
+    return_attention_mask: true
+    return_causal_mask: true
+    cache_dir: "cache/generative"
+    use_preprocessing_cache: true
+
+  split:
+    train: 0.9
+    val: 0.05
+    test: 0.05
+    max_train_size: null
+
+  train_loader:
+    batch_size: 32
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    drop_last: true
+    persistent_workers: true
+    prefetch_factor: 2
+
+  val_loader:
+    batch_size: 32
+    shuffle: false
+    num_workers: 2
+    pin_memory: true
+    drop_last: false
+    persistent_workers: true
+    prefetch_factor: 2
+
+# ==============================================================================
+# CHECKPOINT CONFIGURATION
+# ==============================================================================
+checkpoint:
+  save_dir: "checkpoints/"
+  save_frequency: 600
+
+# ==============================================================================
+# GENERATION SAMPLING DURING TRAINING
+# ==============================================================================
+generation:
+  enabled: true
+  sample_every_n_steps: 1000
+  num_samples: 1
+  temperatures: [0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4]
+  max_new_tokens: 64
+  prompts:
+    - "Once upon a time"
+    - "In a magical forest"
+    - "A young wizard discovered"
+    - "The dragon flew over the mountains"
+    - "One cold winter morning"

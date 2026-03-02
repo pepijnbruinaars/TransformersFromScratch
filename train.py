@@ -266,6 +266,7 @@ def main():
             sequence_length=experiment_config.model_config.sequence_length,
             use_flash_attention=experiment_config.model_config.use_flash_attention,
             activation=experiment_config.model_config.activation,
+            use_rope=experiment_config.model_config.use_rope,
         )
 
         trainer = Trainer(

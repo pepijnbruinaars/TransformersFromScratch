@@ -19,6 +19,7 @@ class ModelConfig:
     dropout_rate: float
     use_flash_attention: bool = True
     activation: str = "gelu"  # "relu", "gelu", "swish", or "swiglu"
+    use_rope: bool = False  # Use Rotary Position Embedding instead of absolute sinusoidal PE
     sequence_length: Optional[int] = None  # Required for decoder_only, optional for encoder_decoder
 
 @dataclass

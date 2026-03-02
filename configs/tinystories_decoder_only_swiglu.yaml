@@ -1,0 +1,137 @@
+experiment_name: "tinystories_decoder_only"
+
+# ==============================================================================
+# MODEL CONFIGURATION
+# Following best practices for limited compute:
+# - 30-40M parameters
+# - Context length: 256
+# - Small, dense model on clean data beats large model on garbage data
+# ==============================================================================
+model:
+  architecture: "decoder_only"
+  n_blocks: 8           # 6 layers (good balance)
+  d_model: 512          # Embedding dimension (~30-40M total params)
+  n_heads: 8            # 8 attention heads (48 dim per head)
+  d_ff: 1536            # Feed-forward intermediate (4x d_model)
+  dropout_rate: 0.05    # Reasonable regularization
+  activation: "swiglu"  # "relu", "gelu", "swish", or "swiglu"
+  use_flash_attention: true
+  sequence_length: 256  # Recommended for compute-limited training
+
+# ==============================================================================
+# TRAINING CONFIGURATION
+# Based on OpenAI/Chinchilla principles for small models
+# ==============================================================================
+training:
+  n_epochs: 3           # 3 epochs over ~100M tokens ≈ 300M total
+  scheduler:
+    type: "cosine"
+    learning_rate: 3e-4       # Good for ~30-40M params (use 2e-4 for >50M)
+    warmup_ratio: 0.02        # 2% warmup (1-3% recommended)
+    min_lr_ratio: 0.1         # Cosine decay to 10% of peak LR
+  optimizer:
+    name: "adam"
+    weight_decay: 0.1         # Strong regularization (not 1e-5!)
+    betas: [0.9, 0.95]        # Standard stable config
+    epsilon: 1e-8
+  gradient_accumulation_steps: 4  # Effective batch = 32 * 4 = 128 sequences
+  gradient_clipping: 1.0           # Clip global norm at 1.0 (critical for stability)
+  use_mixed_precision: true        # fp16/bf16 - nearly 2x throughput
+  validate_every_n_steps: 1000     # Run cheap validation every 1000 steps
+
+data:
+  batch_size: 32        # Per-GPU batch size
+  tokenizer_path: "models/tokenizers/tinystories_tokenizer.json"
+  vocab_size: 16000     # BPE vocabulary size
+
+# ==============================================================================
+# GENERATIVE DATASET CONFIGURATION
+# TinyStories: ~100M tokens, clean, designed for small models
+# ==============================================================================
+generative:
+  # Text field name in dataset
+  text_field: "text"   # TinyStories uses "text" field
+
+  # Dataset configuration
+  dataset:
+    provider_name: "huggingface"
+    dataset_name: "roneneldan/TinyStories"
+    dataset_config: null
+    split: "train"
+
+  # Preprocessing configuration
+  preprocessing:
+    sequence:
+      max_length: 256           # Match model context length
+      truncation: true
+      padding: "max_length"
+    add_special_tokens: true
+    return_attention_mask: true
+    return_causal_mask: true
+    cache_dir: "cache/generative"
+    use_preprocessing_cache: true  # Cache preprocessed data (3-4x speedup on epoch 2+)
+
+  # Dataset splitting
+  split:
+    train: 0.9
+    val: 0.05
+    test: 0.05
+    max_train_size: null  # Use all training data
+
+  # DataLoader settings (optimized for single GPU)
+  train_loader:
+    batch_size: 32
+    shuffle: true
+    num_workers: 4
+    pin_memory: true
+    drop_last: true              # Drop incomplete batches for stable batch norm
+    persistent_workers: true     # Keep workers alive between epochs
+    prefetch_factor: 2
+
+  val_loader:
+    batch_size: 32
+    shuffle: false
+    num_workers: 2
+    pin_memory: true
+    drop_last: false
+    persistent_workers: true
+    prefetch_factor: 2
+
+# ==============================================================================
+# CHECKPOINT CONFIGURATION
+# ==============================================================================
+checkpoint:
+  save_dir: "checkpoints/"
+  save_frequency: 600  # Save every 10 minutes
+
+# ==============================================================================
+# GENERATION SAMPLING DURING TRAINING
+# Monitor qualitative improvement with fixed prompts
+# ==============================================================================
+generation:
+  enabled: true
+  sample_every_n_steps: 1000      # Sample every 1000 training steps
+  num_samples: 1                 # Generate 1 sample per prompt/temperature
+  temperatures: [0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4]       # Conservative temperatures for better quality
+  max_new_tokens: 64
+  prompts:
+    - "Once upon a time"
+    - "In a magical forest"
+    - "A young wizard discovered"
+    - "The dragon flew over the mountains"
+    - "One cold winter morning"
+
+# ==============================================================================
+# NOTES ON THIS CONFIGURATION
+# ==============================================================================
+# Parameter count: ~30-40M parameters
+# Training time: ~3 epochs of TinyStories ≈ 20-30 hours on single V100/A100
+# Expected perplexity: ~20-30 (excellent for this scale)
+# Quality signal: Coherent multi-sentence stories by epoch 2
+#
+# This config prioritizes:
+# 1. Fast convergence (clean data, good learning rate)
+# 2. Training stability (pre-norm already in architecture, good LR schedule)
+# 3. Visible improvement (sampling every 200 steps shows quality gains)
+# 4. Compute efficiency (gradient accumulation, mixed precision)
+# ==============================================================================

@@ -34,7 +34,8 @@ class DecoderOnlyTransformer(nn.Module):
                  vocab_size: int,
                  sequence_length: int,
                  use_flash_attention: bool = True,
-                 activation: str = "gelu"):
+                 activation: str = "gelu",
+                 use_rope: bool = False):
 
         super(DecoderOnlyTransformer, self).__init__()
         self.decoder_stack = DecoderOnlyStack(n_blocks,
@@ -43,10 +44,16 @@ class DecoderOnlyTransformer(nn.Module):
                                               n_heads,
                                               dropout,
                                               use_flash_attention,
-                                              activation
+                                              activation,
+                                              use_rope=use_rope,
+                                              sequence_length=sequence_length,
                                             )
         self.input_embedding = InputEmbedding(d_model, vocab_size)
-        self.positional_encoding = PositionalEncoding(d_model, sequence_length, dropout)
+        # RoPE encodes position inside attention, so absolute PE is not needed
+        self.positional_encoding = (
+            None if use_rope
+            else PositionalEncoding(d_model, sequence_length, dropout)
+        )
         self.projection_layer = ProjectionLayer(d_model, vocab_size)
         
         # Share embedding and projectoin weights
@@ -61,7 +68,8 @@ class DecoderOnlyTransformer(nn.Module):
 
     def forward(self, x, mask=None, return_attentions=False):
         x = self.input_embedding(x)
-        x = self.positional_encoding(x)
+        if self.positional_encoding is not None:
+            x = self.positional_encoding(x)
         if return_attentions:
             x, attentions = self.decoder_stack(x, mask=mask, return_attentions=True)
             return self.projection_layer(x), attentions
