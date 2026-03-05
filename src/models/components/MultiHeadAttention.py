@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import math
 
 from .RotaryEmbedding import RotaryEmbedding
+from .DecoderOnly.KVCache import KVCache
 
 
 def scaled_dot_product_attention(
@@ -90,6 +91,8 @@ class MultiHeadAttention(nn.Module):
         V: torch.FloatTensor,
         mask: torch.Tensor,
         return_attentions: bool = False,
+        cache: Optional[KVCache] = None,
+        layer_idx: Optional[int] = None,
     ):
         batch_size = Q.shape[0]
 
@@ -103,9 +106,17 @@ class MultiHeadAttention(nn.Module):
         key = key.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
         value = value.reshape(batch_size, -1, self.n_heads, self.d_k).transpose(1, 2)
 
-        # Apply rotary position embeddings to Q and K (replaces absolute PE)
+        # Apply rotary position embeddings to Q and K (replaces absolute PE).
+        # offset = number of tokens already in cache so each new token gets
+        # its correct absolute position rather than starting from 0.
         if self.rope is not None:
-            query, key = self.rope(query, key)
+            position_offset = cache.get_length(layer_idx) if cache is not None else 0
+            query, key = self.rope(query, key, offset=position_offset)
+
+        # Update KV cache (after RoPE so cached K already carries positional info)
+        # and replace key/value with the full cached tensors for attention.
+        if cache is not None:
+            key, value = cache.update(layer_idx, key, value)
 
         # Use FlashAttention or custom implementation
         if self.use_flash_attention and not return_attentions:

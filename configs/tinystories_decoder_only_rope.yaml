@@ -64,6 +64,7 @@ generative:
     return_causal_mask: true
     cache_dir: "cache/generative"
     use_preprocessing_cache: true
+    use_sequence_packing: true
 
   split:
     train: 0.9

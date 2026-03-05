@@ -1,3 +1,4 @@
+from typing import Optional
 import numpy as np
 import torch.nn as nn
 import logging
@@ -8,6 +9,7 @@ from .components import (
     ProjectionLayer,
 )
 from .components.DecoderOnly.DecoderOnlyStack import DecoderOnlyStack
+from .components.DecoderOnly.KVCache import KVCache
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +68,12 @@ class DecoderOnlyTransformer(nn.Module):
             f"n_blocks: {n_blocks}, d_model: {d_model}, d_ff: {d_ff}, n_heads: {n_heads}, dropout: {dropout}, sequence_length: {sequence_length}, vocab_size: {vocab_size}, use_flash_attention: {use_flash_attention}, activation: {activation}"
         )
 
-    def forward(self, x, mask=None, return_attentions=False):
+    def forward(self, x, mask=None, return_attentions=False, cache: Optional[KVCache] = None):
         x = self.input_embedding(x)
         if self.positional_encoding is not None:
             x = self.positional_encoding(x)
         if return_attentions:
-            x, attentions = self.decoder_stack(x, mask=mask, return_attentions=True)
+            x, attentions = self.decoder_stack(x, mask=mask, return_attentions=True, cache=cache)
             return self.projection_layer(x), attentions
-        x = self.decoder_stack(x, mask=mask, return_attentions=False)
+        x = self.decoder_stack(x, mask=mask, return_attentions=False, cache=cache)
         return self.projection_layer(x)

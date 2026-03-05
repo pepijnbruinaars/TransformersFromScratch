@@ -33,7 +33,12 @@ from src.data import (
     EuroParlDataProvider,
     create_dataloaders_from_config,
 )
-from src.data.generative_dataset import GenerativeDataset, generative_collate_fn
+from src.data.generative_dataset import (
+    GenerativeDataset,
+    PackedGenerativeDataset,
+    generative_collate_fn,
+    packed_generative_collate_fn,
+)
 from src.data.providers import PROVIDER_REGISTRY
 from src.data.providers.multi_corpus import MultiCorpusDataProvider
 from src.tokenization.tokenizer import CustomTokenizer
@@ -110,23 +115,20 @@ def _create_generative_dataloaders(
         val_dataset_hf = split_dataset["test"]
 
     # Create datasets
-    train_dataset = GenerativeDataset(
-        train_dataset_hf,
-        tokenizer,
-        preprocessing_config.sequence_config.max_length,
-        preprocessing_config.generative_config.text_field,
-    )
+    use_packing = getattr(preprocessing_config, "use_sequence_packing", False)
+    max_length = preprocessing_config.sequence_config.max_length
+    text_field = preprocessing_config.generative_config.text_field
 
-    val_dataset = GenerativeDataset(
-        val_dataset_hf,
-        tokenizer,
-        preprocessing_config.sequence_config.max_length,
-        preprocessing_config.generative_config.text_field,
-    )
+    DatasetClass = PackedGenerativeDataset if use_packing else GenerativeDataset
+    train_dataset = DatasetClass(train_dataset_hf, tokenizer, max_length, text_field)
+    val_dataset = DatasetClass(val_dataset_hf, tokenizer, max_length, text_field)
 
-    # Create dataloaders
-    pad_token_id = tokenizer.token_to_id(PAD_TOKEN)
-    collate_fn = partial(generative_collate_fn, pad_token_id=pad_token_id)
+    if use_packing:
+        logger.info("Using sequence packing (no padding — 100% token utilization)")
+        collate_fn = packed_generative_collate_fn
+    else:
+        pad_token_id = tokenizer.token_to_id(PAD_TOKEN)
+        collate_fn = partial(generative_collate_fn, pad_token_id=pad_token_id)
 
     train_loader = DataLoader(
         train_dataset,

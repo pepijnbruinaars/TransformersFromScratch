@@ -31,12 +31,19 @@ class TrainingLogger:
     def log_training_step(self, loss: float, step: int, lr: float) -> None:
         """Log training loss and learning rate.
 
+        Loss and LR are both written under the "Loss/" namespace so TensorBoard
+        renders them in the same section with a shared step x-axis, making it
+        easy to correlate LR schedule changes with loss behaviour.
+
         Args:
             loss: Training loss value.
             step: Current training step.
             lr: Current learning rate.
         """
         self.writer.add_scalar("Loss/train", loss, step)
+        # LR in the same "Loss/" group → same step axis, same TensorBoard section
+        self.writer.add_scalar("Loss/LR", lr, step)
+        # Standalone chart for zooming into the LR schedule in detail
         self.writer.add_scalar("Train/Learning_Rate", lr, step)
 
     def log_perplexity(self, loss: float, step: int, prefix: str = "Metrics") -> None:
@@ -100,6 +107,41 @@ class TrainingLogger:
             step: Current training step.
         """
         self.writer.add_scalar("Health/Grad_Norm", grad_norm, step)
+
+    def log_batch_stats(self, seq_len: int, unique_tokens: int, step: int) -> None:
+        """Log per-batch sequence-length and vocabulary-diversity metrics.
+
+        Sequence length tracks how much of the context window each batch
+        actually uses (shorter = more padding waste with the standard dataset;
+        always max_length with sequence packing).  Unique tokens per batch
+        measures vocabulary diversity — a healthy batch should cover a broad
+        slice of the vocabulary.
+
+        Args:
+            seq_len: Sequence length processed by the model this step
+                     (= padded/packed length, i.e. input_ids.shape[1]).
+            unique_tokens: Number of distinct token IDs in input_ids.
+            step: Current training step.
+        """
+        self.writer.add_scalar("Efficiency/Seq_Length", seq_len, step)
+        self.writer.add_scalar("Efficiency/Unique_Tokens", unique_tokens, step)
+
+    def log_loss_spike(self, loss: float, ema_loss: float, step: int) -> None:
+        """Log a loss-spike marker for anomalous training steps.
+
+        Only called when the current loss is significantly above the recent
+        exponential moving average.  Writing to the same step as the normal
+        training loss allows TensorBoard to overlay the spike markers on the
+        loss curve when both tags are viewed together.
+
+        Args:
+            loss: Raw loss at this step (the spike value).
+            ema_loss: Smoothed EMA loss used as the baseline.
+            step: Current training step.
+        """
+        self.writer.add_scalar("Loss/spike", loss, step)
+        # Ratio > 1.0 = spike; visible at a glance in Health/
+        self.writer.add_scalar("Health/Loss_Spike_Ratio", loss / max(ema_loss, 1e-8), step)
 
     # ============== PERIODIC METRICS (EVERY N STEPS) ==============
 
@@ -428,6 +470,155 @@ class TrainingLogger:
             markdown_text += f"| {source} | {reference} | {prediction} |\n"
 
         self.writer.add_text(f"{tag_prefix}/Samples", markdown_text, step)
+
+    # ============== OPTIMIZATION DYNAMICS ==============
+
+    def log_update_ratios(
+        self, model: nn.Module, optimizer: torch.optim.Optimizer, step: int
+    ) -> None:
+        """Log parameter update-to-weight ratios using Adam's moment estimates.
+
+        The effective per-step update magnitude for Adam is approximately
+        α * m̂_t / (√v̂_t + ε). Dividing by the parameter norm gives a
+        scale-free ratio. Values around 1e-3 are healthy; consistently
+        above 1e-2 suggests too-high LR, below 1e-4 suggests too-low LR.
+
+        Uses the optimizer's stored exponential moving averages directly,
+        so no parameter snapshot is needed.
+
+        Args:
+            model: The transformer model.
+            optimizer: Adam/AdamW optimizer with stored moment estimates.
+            step: Current training step.
+        """
+        param_map = {id(p): name for name, p in model.named_parameters()}
+
+        group_ratios: dict[str, list[float]] = {}
+        for group in optimizer.param_groups:
+            lr = group["lr"]
+            for p in group["params"]:
+                state = optimizer.state.get(p)
+                if state is None or "exp_avg" not in state:
+                    continue
+                m = state["exp_avg"]
+                v = state["exp_avg_sq"]
+                step_count = state.get("step", 1)
+                # Bias-corrected estimates
+                beta1 = group.get("betas", (0.9, 0.999))[0]
+                beta2 = group.get("betas", (0.9, 0.999))[1]
+                bc1 = 1.0 - beta1 ** step_count
+                bc2 = 1.0 - beta2 ** step_count
+                m_hat = m / bc1
+                v_hat = v / bc2
+                eps = group.get("eps", 1e-8)
+                update_norm = (lr * m_hat / (v_hat.sqrt() + eps)).norm().item()
+                weight_norm = p.data.norm().item()
+                if weight_norm < 1e-12:
+                    continue
+                ratio = update_norm / weight_norm
+
+                name = param_map.get(id(p), "unknown")
+                if "embedding" in name:
+                    group_ratios.setdefault("Embedding", []).append(ratio)
+                elif "decoder_stack" in name:
+                    group_ratios.setdefault("Decoder", []).append(ratio)
+                else:
+                    group_ratios.setdefault("Other", []).append(ratio)
+
+        for group_name, ratios in group_ratios.items():
+            avg = sum(ratios) / len(ratios)
+            self.writer.add_scalar(f"Optimization/Update_Ratio/{group_name}", avg, step)
+
+    def log_attention_entropy(self, attentions: list, step: int) -> None:
+        """Log entropy of attention distributions per layer.
+
+        Entropy H = -Σ p·log(p) over the attention weight distribution.
+        Low entropy → focused head (attending to few positions).
+        High entropy (≈ log(seq_len)) → diffuse/uniform head.
+        Tracking this over training shows when heads specialise.
+
+        Args:
+            attentions: List of attention tensors per layer, each shape
+                        (batch, n_heads, seq_len, seq_len). May be None
+                        if flash attention was used (weights not returned).
+            step: Current training step.
+        """
+        valid_layers = [a for a in attentions if a is not None and a.numel() > 0]
+        if not valid_layers:
+            return
+
+        for layer_idx, attn in enumerate(valid_layers):
+            # attn: (batch, n_heads, seq_len, seq_len)
+            # Clamp to avoid log(0)
+            attn_clamped = attn.clamp(min=1e-9)
+            # Entropy per (batch, head, query position), then average over batch & position
+            entropy = -(attn_clamped * attn_clamped.log()).sum(dim=-1)  # (batch, heads, seq_len)
+            mean_entropy = entropy.mean().item()
+            self.writer.add_scalar(f"Attention/Entropy/Layer_{layer_idx}", mean_entropy, step)
+
+        # Per-head entropy for the final layer only
+        final_attn = valid_layers[-1]
+        final_clamped = final_attn.clamp(min=1e-9)
+        per_head_entropy = -(final_clamped * final_clamped.log()).sum(dim=-1).mean(dim=(0, 2))
+        for h, h_entropy in enumerate(per_head_entropy):
+            self.writer.add_scalar(
+                f"Attention/Entropy/FinalLayer_Head_{h}", h_entropy.item(), step
+            )
+
+    def log_per_position_loss(self, per_position_loss: torch.Tensor, step: int) -> None:
+        """Log average loss bucketed by sequence position.
+
+        Reveals whether the model struggles more at the beginning (lack of
+        context) or end (long-range dependencies) of sequences.
+        The tensor is bucketed into 8 equal-width groups so that the chart
+        is readable regardless of sequence length.
+
+        Args:
+            per_position_loss: 1-D float tensor of length seq_len, already
+                               averaged across the batch (CPU tensor).
+            step: Current training step.
+        """
+        n = per_position_loss.shape[0]
+        n_buckets = min(8, n)
+        bucket_size = n // n_buckets
+        for b in range(n_buckets):
+            start = b * bucket_size
+            end = start + bucket_size if b < n_buckets - 1 else n
+            bucket_loss = per_position_loss[start:end].mean().item()
+            self.writer.add_scalar(f"Loss/Position_Bucket_{b}", bucket_loss, step)
+
+    def log_generation_stats(
+        self, stats: dict[float, dict[str, float]], step: int
+    ) -> None:
+        """Log generation quality metrics (distinct-n) per temperature.
+
+        Distinct-1 and distinct-2 measure vocabulary diversity in generated
+        text: |unique n-grams| / |total n-grams|. Values near 1.0 are ideal;
+        low values (< 0.3) indicate repetition or mode collapse.
+
+        Args:
+            stats: {temperature: {"distinct_1": float, "distinct_2": float}}
+            step: Current training step.
+        """
+        for temp, metrics in stats.items():
+            tag = f"Generation/Temp_{temp:.1f}"
+            if "distinct_1" in metrics:
+                self.writer.add_scalar(f"{tag}/Distinct_1", metrics["distinct_1"], step)
+            if "distinct_2" in metrics:
+                self.writer.add_scalar(f"{tag}/Distinct_2", metrics["distinct_2"], step)
+
+    def log_gpu_memory(self, step: int) -> None:
+        """Log GPU memory usage (allocated and reserved) in MB.
+
+        Args:
+            step: Current training step.
+        """
+        if not torch.cuda.is_available():
+            return
+        allocated_mb = torch.cuda.memory_allocated() / 1024 ** 2
+        reserved_mb = torch.cuda.memory_reserved() / 1024 ** 2
+        self.writer.add_scalar("System/GPU_Memory_Allocated_MB", allocated_mb, step)
+        self.writer.add_scalar("System/GPU_Memory_Reserved_MB", reserved_mb, step)
 
     # ============== UTILITY METHODS ==============
 

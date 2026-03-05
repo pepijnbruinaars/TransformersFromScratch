@@ -1,3 +1,4 @@
+from typing import Optional
 import torch.nn as nn
 
 from ...components.FeedForward import build_feedforward
@@ -5,6 +6,8 @@ from ...components.LayerNormalization import LayerNormalization
 from ...components.MultiHeadAttention import MultiHeadAttention
 
 from .DecoderBlock import DecoderBlock
+from .KVCache import KVCache
+
 
 class DecoderOnlyStack(nn.Module):
     def __init__(self, n_blocks, d_model, d_ff, n_heads, dropout, use_flash_attention, activation="gelu", use_rope=False, sequence_length=512):
@@ -21,14 +24,14 @@ class DecoderOnlyStack(nn.Module):
         )
         self.normalization_layer = LayerNormalization(d_model)
 
-    def forward(self, x, mask=None, return_attentions=False):
+    def forward(self, x, mask=None, return_attentions=False, cache: Optional[KVCache] = None):
         all_attentions = []
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             if return_attentions:
-                x, self_attn = block(x, mask, return_attentions=True)
+                x, self_attn = block(x, mask, cache=cache, layer_idx=i, return_attentions=True)
                 all_attentions.append(self_attn)
             else:
-                x = block(x, mask, return_attentions=False)
+                x = block(x, mask, cache=cache, layer_idx=i, return_attentions=False)
         x = self.normalization_layer(x)
         if return_attentions:
             return x, all_attentions

@@ -207,6 +207,7 @@ class ConfigLoader:
                     return_causal_mask=preproc_data.get("return_causal_mask", True),
                     cache_dir=preproc_data.get("cache_dir"),
                     use_preprocessing_cache=preproc_data.get("use_preprocessing_cache", True),
+                    use_sequence_packing=preproc_data.get("use_sequence_packing", False),
                 )
 
         # Extract and build GenerationConfig (optional, for sampling during training)

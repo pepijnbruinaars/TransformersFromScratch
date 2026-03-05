@@ -70,6 +70,7 @@ generative:
     return_causal_mask: true
     cache_dir: "cache/generative"
     use_preprocessing_cache: true  # Cache preprocessed data (3-4x speedup on epoch 2+)
+    use_sequence_packing: true
 
   # Dataset splitting
   split:

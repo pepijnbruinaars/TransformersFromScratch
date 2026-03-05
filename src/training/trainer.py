@@ -146,6 +146,11 @@ class Trainer:
         # Get logging config with defaults
         self.logging_config = training_config.logging_config or LoggingConfig()
 
+        # EMA loss for spike detection (initialised on first step)
+        self._loss_ema: Optional[float] = None
+        self._loss_ema_alpha: float = 0.02   # Slow EMA — stable baseline
+        self._spike_threshold: float = 1.5   # Spike when loss > EMA × threshold
+
         logger.info(f"Using device: {self.device}")
         logger.info(f"Logging to: {experiment_log_dir}")
         logger.info(f"Gradient accumulation steps: {self.accumulation_steps}")
@@ -491,6 +496,9 @@ class Trainer:
         # Weight norms
         self.tb_logger.log_weight_norms(self.model, step)
 
+        # Update-to-weight ratio via Adam moment estimates
+        self.tb_logger.log_update_ratios(self.model, self.optimizer, step)
+
     def _log_periodic_metrics_expensive(self, step: int) -> None:
         """Log expensive metrics (every N*5 steps).
 
@@ -620,11 +628,13 @@ class Trainer:
                 top_p=getattr(self.generation_config, 'top_p', 0.95),
             )
 
-            # Generate samples
-            generated_text = sampler.sample()
+            # Generate samples (with diversity stats)
+            generated_text, gen_stats = sampler.sample_with_stats()
 
             # Log as text in TensorBoard
             self.tb_logger.writer.add_text("Generations/Samples", generated_text, step)
+            # Log distinct-n diversity metrics per temperature
+            self.tb_logger.log_generation_stats(gen_stats, step)
             logger.info(f"Logged decoder-only generation samples at step {step}")
 
         except Exception as e:
@@ -681,6 +691,10 @@ class Trainer:
                     step=step,
                     prompt_idx=i,
                 )
+
+                # Attention entropy (prompt 0 only to keep chart count manageable)
+                if i == 0:
+                    self.tb_logger.log_attention_entropy(attentions, step)
 
         self.model.train()
 
@@ -797,6 +811,9 @@ class Trainer:
             self.train_dataloader, desc=f"Epoch {self.training_state.epoch + 1} Training"
         )
         epoch_losses = []
+        # Accumulate per-position loss between periodic logging steps
+        _per_pos_accum: Optional[torch.Tensor] = None
+        _per_pos_count: int = 0
 
         for step, batch in enumerate(batch_iterator):
             step_start_time = time.time()
@@ -815,9 +832,17 @@ class Trainer:
                 attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
                 causal_mask = batch["causal_mask"].to(self.device, non_blocking=True)
 
-                loss, grad_norm = self._training_step_decoder_only(
+                loss, grad_norm, per_position_loss = self._training_step_decoder_only(
                     step, input_ids, target_ids, attention_mask, causal_mask
                 )
+
+                # Accumulate per-position loss for periodic logging
+                if _per_pos_accum is None:
+                    _per_pos_accum = per_position_loss
+                else:
+                    if per_position_loss.shape == _per_pos_accum.shape:
+                        _per_pos_accum += per_position_loss
+                _per_pos_count += 1
 
                 # For generative, compute metrics differently
                 padding_ratio_tensor = torch.tensor(
@@ -872,7 +897,27 @@ class Trainer:
                 max_grad_norm = self.training_config.optimizer_config.max_grad_norm
                 self.tb_logger.log_clip_factor(grad_norm, max_grad_norm, current_step)
 
+            # Sequence length and unique tokens (decoder-only only; same step axis as loss)
+            if self.model_type == "decoder_only":
+                seq_len = input_ids.shape[1]
+                unique_tokens = input_ids.unique().numel()
+                self.tb_logger.log_batch_stats(seq_len, unique_tokens, current_step)
+
+            # Loss spike detection via slow EMA baseline
+            if self._loss_ema is None:
+                self._loss_ema = loss
+            else:
+                if loss > self._loss_ema * self._spike_threshold:
+                    self.tb_logger.log_loss_spike(loss, self._loss_ema, current_step)
+                self._loss_ema = (
+                    (1.0 - self._loss_ema_alpha) * self._loss_ema
+                    + self._loss_ema_alpha * loss
+                )
+
             epoch_losses.append(loss)
+
+            # GPU memory (decoder-only; cheap CUDA query)
+            self.tb_logger.log_gpu_memory(current_step)
 
             # === PERIODIC LOGGING (EVERY N STEPS) ===
             if (
@@ -880,6 +925,11 @@ class Trainer:
                 and current_step % self.logging_config.per_layer_metrics_frequency == 0
             ):
                 self._log_periodic_metrics(current_step)
+                # Per-position loss — average over steps since last log
+                if self.model_type == "decoder_only" and _per_pos_accum is not None and _per_pos_count > 0:
+                    self.tb_logger.log_per_position_loss(_per_pos_accum / _per_pos_count, current_step)
+                    _per_pos_accum = None
+                    _per_pos_count = 0
 
             self.training_state.step += 1
 
@@ -1244,7 +1294,7 @@ class Trainer:
         target_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         causal_mask: torch.Tensor,
-    ) -> tuple[float, Optional[float]]:
+    ) -> tuple[float, Optional[float], torch.Tensor]:
         """Execute a single training step for decoder-only models.
 
         Args:
@@ -1255,7 +1305,10 @@ class Trainer:
             causal_mask: Causal mask for autoregressive attention [seq_len, seq_len]
 
         Returns:
-            Tuple of (loss, grad_norm). grad_norm is None if not an accumulation step.
+            Tuple of (loss, grad_norm, per_position_loss).
+            grad_norm is None if not an accumulation step.
+            per_position_loss is a 1-D CPU tensor of shape (seq_len,) with the
+            batch-averaged cross-entropy loss at each sequence position.
         """
         # Save time-based checkpoint if needed
         save_time_based_checkpoint(self)
@@ -1287,6 +1340,18 @@ class Trainer:
             # logits: [batch_size, seq_len, vocab_size]
             # target_ids: [batch_size, seq_len]
             loss = self.loss_function(logits.view(-1, logits.size(-1)), target_ids.view(-1))
+
+            # Per-position loss (detached; no gradient through this path)
+            with torch.no_grad():
+                per_token = torch.nn.functional.cross_entropy(
+                    logits.detach().float().view(-1, logits.size(-1)),
+                    target_ids.clamp(min=0).view(-1),
+                    reduction="none",
+                ).view(batch_size, seq_len)
+                mask_f = attention_mask.float()
+                per_position_loss = (
+                    (per_token * mask_f).sum(0) / mask_f.sum(0).clamp(min=1)
+                ).cpu()
 
             # Scale loss for gradient accumulation
             scaled_loss = loss / self.accumulation_steps
@@ -1325,4 +1390,4 @@ class Trainer:
             # Log gradient norm
             self.tb_logger.log_gradient_norm(grad_norm_value, self.training_state.step)
 
-        return loss.item(), grad_norm_value
+        return loss.item(), grad_norm_value, per_position_loss

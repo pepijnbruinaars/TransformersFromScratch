@@ -6,3 +6,7 @@ __pycache__
 /models
 /data
 /logs
+/cache
+.gradio
+.pytest_cache
+checkpoints

@@ -1,8 +1,11 @@
 # Decoder block only has a decoder - so self-attention and feedforward. No cross attention.
+from typing import Optional
 import torch
 import torch.nn as nn
 
 from ...components.ResidualConnection import ResidualConnection
+from .KVCache import KVCache
+
 
 class DecoderBlock(nn.Module):
     """A single decoder block consisting of self-attention and feedforward layers, with residual connections."""
@@ -24,13 +27,21 @@ class DecoderBlock(nn.Module):
         self,
         x: torch.Tensor,
         decoder_mask: torch.Tensor,
+        cache: Optional[KVCache] = None,
+        layer_idx: Optional[int] = None,
         return_attentions: bool = False,
     ):
         self_attn = None
 
         # 1. Calculate self-attention
         out1 = self.residual_connection_1(
-            x, lambda x: self.self_attention(x, x, x, decoder_mask, return_attentions=return_attentions)
+            x,
+            lambda x: self.self_attention(
+                x, x, x, decoder_mask,
+                return_attentions=return_attentions,
+                cache=cache,
+                layer_idx=layer_idx,
+            ),
         )
         if return_attentions and isinstance(out1, tuple):
             x, self_attn = out1

@@ -6,9 +6,10 @@ from typing import Dict
 import logging
 
 import torch
+from tqdm import tqdm
 
 from ..tokenization.tokenizer import CustomTokenizer
-from ..constants import PAD_TOKEN
+from ..constants import END_TOKEN, PAD_TOKEN
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,80 @@ class GenerativeDataset(TorchDataset):
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "target_ids": torch.tensor(target_ids, dtype=torch.long),
             "length": len(input_ids),  # Actual length (before padding)
+        }
+
+
+class PackedGenerativeDataset(TorchDataset):
+    """Dataset for causal language modeling using sequence packing.
+
+    Tokenizes all documents upfront, concatenates them with EOS separators
+    into one flat token stream, then splits into fixed-length chunks of
+    exactly max_length tokens. This eliminates padding entirely — every
+    position in every batch is a real token.
+
+    Token utilization: ~100% (vs. potentially 50–80% with padded batches
+    on short-document datasets like TinyStories).
+
+    Note: Pre-tokenizes the full dataset in __init__. Memory usage is
+    approximately 2 × total_tokens bytes (stored as int16-range values in
+    a torch.long tensor).
+
+    Args:
+        dataset: HuggingFace Dataset with text data
+        tokenizer: CustomTokenizer instance
+        max_length: Tokens per packed sequence (model context length)
+        text_field: Field name containing text in each dataset row
+    """
+
+    def __init__(
+        self,
+        dataset: Dataset,
+        tokenizer: CustomTokenizer,
+        max_length: int,
+        text_field: str = "text",
+    ) -> None:
+        self.max_length = max_length
+        eos_id = tokenizer.token_to_id(END_TOKEN)
+
+        # Pre-tokenize all documents and concatenate with EOS separators.
+        # Each document ends with </s>, giving the model a clean boundary signal
+        # and ensuring the next document's first token is always in a "fresh" context.
+        logger.info(f"PackedGenerativeDataset: pre-tokenizing {len(dataset)} documents...")
+        all_tokens: list[int] = []
+        for item in tqdm(dataset, desc="Tokenizing", unit="doc", leave=False):
+            token_ids = tokenizer.encode(item[text_field])
+            if token_ids:
+                all_tokens.extend(token_ids)
+                all_tokens.append(eos_id)
+
+        self.tokens = torch.tensor(all_tokens, dtype=torch.long)
+
+        # Number of complete chunks we can extract.
+        # Each chunk needs max_length + 1 consecutive tokens (input + shifted target).
+        self.n_chunks = (len(self.tokens) - 1) // max_length
+
+        logger.info(
+            f"PackedGenerativeDataset: {len(dataset)} docs → "
+            f"{len(self.tokens):,} tokens → "
+            f"{self.n_chunks:,} packed sequences of length {max_length}"
+        )
+
+    def __len__(self) -> int:
+        return self.n_chunks
+
+    def __getitem__(self, idx: int) -> Dict:
+        """Return a fixed-length packed sequence.
+
+        Returns:
+            Dict with:
+            - input_ids: tokens[start : start+max_length]
+            - target_ids: tokens[start+1 : start+max_length+1]
+        """
+        start = idx * self.max_length
+        chunk = self.tokens[start : start + self.max_length + 1]
+        return {
+            "input_ids": chunk[:-1],
+            "target_ids": chunk[1:],
         }
 
 
@@ -173,4 +248,40 @@ def generative_collate_fn(
         "attention_mask": batch_attention_mask,
         "causal_mask": causal_mask,
         "lengths": batch_lengths,
+    }
+
+
+def packed_generative_collate_fn(batch: list) -> Dict[str, torch.Tensor]:
+    """Collate function for PackedGenerativeDataset.
+
+    All sequences are already the same fixed length, so no padding is needed.
+    The attention_mask is all-True (no padding positions), which is
+    compatible with the trainer's combined_mask logic without any changes.
+
+    Args:
+        batch: List of dicts from PackedGenerativeDataset
+
+    Returns:
+        Dict with:
+        - input_ids: [batch_size, max_length]
+        - target_ids: [batch_size, max_length]
+        - attention_mask: [batch_size, max_length] (all True — no padding)
+        - causal_mask: [max_length, max_length]
+        - lengths: [batch_size] (all equal to max_length)
+    """
+    input_ids = torch.stack([item["input_ids"] for item in batch])
+    target_ids = torch.stack([item["target_ids"] for item in batch])
+    seq_len = input_ids.shape[1]
+
+    # All positions are real tokens — full attention_mask of ones
+    attention_mask = torch.ones(input_ids.shape[0], seq_len, dtype=torch.bool)
+    causal_mask = create_causal_mask(seq_len, input_ids.device)
+    lengths = torch.full((input_ids.shape[0],), seq_len, dtype=torch.long)
+
+    return {
+        "input_ids": input_ids,
+        "target_ids": target_ids,
+        "attention_mask": attention_mask,
+        "causal_mask": causal_mask,
+        "lengths": lengths,
     }

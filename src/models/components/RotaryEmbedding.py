@@ -43,21 +43,25 @@ class RotaryEmbedding(nn.Module):
         return torch.cat([-x2, x1], dim=-1)
 
     def forward(
-        self, q: torch.Tensor, k: torch.Tensor
+        self, q: torch.Tensor, k: torch.Tensor, offset: int = 0
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Apply rotary embeddings to query and key tensors.
 
         Args:
             q: (batch, n_heads, seq_len, d_k)
             k: (batch, n_heads, seq_len, d_k)
+            offset: Absolute position of the first token in q/k. During
+                    normal (non-cached) forward passes this is 0. During
+                    KV-cached decode it equals the number of tokens already
+                    in the cache, so the new token gets the correct position.
 
         Returns:
             q_rot, k_rot: Rotated query and key, same shapes as input.
         """
         seq_len = q.shape[2]
-        # Slice to actual seq_len and broadcast over batch and heads
-        cos = self.cos_cache[:seq_len].unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, d_k)
-        sin = self.sin_cache[:seq_len].unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, d_k)
+        # Slice to [offset, offset+seq_len) and broadcast over batch and heads
+        cos = self.cos_cache[offset:offset + seq_len].unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, d_k)
+        sin = self.sin_cache[offset:offset + seq_len].unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, d_k)
         q_rot = q * cos + self.rotate_half(q) * sin
         k_rot = k * cos + self.rotate_half(k) * sin
         return q_rot, k_rot
